@@ -2,4 +2,6 @@ target = Racer
 
 listener=gov.nasa.jpf.listener.PreciseRaceDetector
 
+search.class = gov.nasa.jpf.search.RandomSearch
+
 report.console.property_violation=error,trace
