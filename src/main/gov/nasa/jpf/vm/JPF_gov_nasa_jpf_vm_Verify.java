@@ -36,6 +36,7 @@ import gov.nasa.jpf.vm.choice.FloatChoiceFromList;
 import gov.nasa.jpf.vm.choice.IntChoiceFromSet;
 import gov.nasa.jpf.vm.choice.IntIntervalGenerator;
 import gov.nasa.jpf.vm.choice.LongChoiceFromList;
+import gov.nasa.jpf.vm.choice.ThreadChoiceFromSet;
 
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
@@ -44,6 +45,8 @@ import java.io.ObjectInputStream;
 import java.io.PrintStream;
 import java.util.BitSet;
 import java.util.List;
+
+import javax.swing.plaf.TreeUI;
 
 /**
  * native peer class for programmatic JPF interface (that can be used inside
@@ -66,6 +69,7 @@ public class JPF_gov_nasa_jpf_vm_Verify extends NativePeer {
   static boolean supportIgnorePath;
   static boolean breakSingleChoice;
   static boolean enableAtomic;
+  static boolean enableInterleave;
 
   static Config config;  // we need to keep this around for CG creation
 
@@ -92,6 +96,10 @@ public class JPF_gov_nasa_jpf_vm_Verify extends NativePeer {
       supportIgnorePath = conf.getBoolean("vm.verify.ignore_path");
       breakSingleChoice = conf.getBoolean("cg.break_single_choice");
       enableAtomic = conf.getBoolean("cg.enable_atomic", true);
+      enableInterleave = conf.getBoolean("cg.enable_interleave", false);
+      if ((enableAtomic == true) && (enableInterleave == true)) {
+        throw new JPFException("cg.enable_atomic and cg.enable_interleave cannot both be set to true.");
+      }
 
       heuristicSearchValue = conf.getInt("search.heuristic.default_value");
 
@@ -298,6 +306,56 @@ public class JPF_gov_nasa_jpf_vm_Verify extends NativePeer {
       if (tiAtomic.getScheduler().setsEndAtomicCG(tiAtomic)){
         env.repeatInvocation();
         return;
+      }
+    }
+  }
+
+  @MJI
+  public static void startInterleaving____V (MJIEnv env, int clsObjRef) {
+    if (enableInterleave) {
+      ThreadInfo tiCurrent = env.getThreadInfo();
+      tiCurrent.setInterleaveState(ThreadInfo.InterleaveState.RUNNING);
+
+      VM vm = env.getVM();
+      ThreadList tlist = vm.getThreadList();
+      ApplicationContext appCtx = tiCurrent.getApplicationContext();
+        
+      ThreadInfo[] choices;
+      if (tlist.hasProcessTimeoutRunnables(appCtx)) {
+        choices = tlist.getProcessTimeoutRunnables(appCtx);
+      } else {
+        choices = tlist.getTimeoutRunnables();
+      }
+
+      ChoiceGenerator<ThreadInfo> interleaveCG = new ThreadChoiceFromSet("START_INTERLEAVING", choices, true);
+      vm.getSystemState().setNextChoiceGenerator(interleaveCG);
+      if(vm.getThreadList().hasProcessTimeoutRunnables(appCtx) == false) {
+        GlobalSchedulingPoint.setGlobal(interleaveCG);
+      }
+    }
+  }
+  
+  @MJI
+  public static void stopInterleaving____V (MJIEnv env, int clsObjRef) {
+    if (enableInterleave) {
+      ThreadInfo tiCurrent = env.getThreadInfo();
+      tiCurrent.setInterleaveState(ThreadInfo.InterleaveState.EXITING);
+
+      VM vm = env.getVM();
+      ThreadList tlist = vm.getThreadList();
+      ApplicationContext appCtx = tiCurrent.getApplicationContext();
+        
+      ThreadInfo[] choices;
+      if (tlist.hasProcessTimeoutRunnables(appCtx)) {
+        choices = tlist.getProcessTimeoutRunnables(appCtx);
+      } else {
+        choices = tlist.getTimeoutRunnables();
+      }
+
+      ChoiceGenerator<ThreadInfo> interleaveCG = new ThreadChoiceFromSet("STOP_INTERLEAVING", choices, true);
+      vm.getSystemState().setNextChoiceGenerator(interleaveCG);
+      if(vm.getThreadList().hasProcessTimeoutRunnables(appCtx) == false) {
+        GlobalSchedulingPoint.setGlobal(interleaveCG);
       }
     }
   }

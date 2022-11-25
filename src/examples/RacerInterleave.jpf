@@ -1,7 +1,10 @@
-target = Racer
+target = RacerInterleave
 
 listener=gov.nasa.jpf.listener.StateSpaceDot
 #state_space_dot.transition_numbers=true
 state_space_dot.show_source=true
+cg.enable_atomic=false
+cg.enable_interleave=true
+#cg.disable_interleave_sync=true
 
 report.console.property_violation=error,trace

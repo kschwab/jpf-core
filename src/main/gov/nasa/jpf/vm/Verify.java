@@ -223,6 +223,10 @@ public class Verify {
 
   public native static void boring (boolean cond);
 
+  public native static void startInterleaving () {}
+
+  public native static void stopInterleaving () {}
+
   public static void busyWait (long duration) {
     // this gets only executed outside of JPF
     while (duration > 0) {

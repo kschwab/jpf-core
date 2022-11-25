@@ -21,15 +21,26 @@ import gov.nasa.jpf.Config;
 import gov.nasa.jpf.Error;
 import gov.nasa.jpf.JPF;
 import gov.nasa.jpf.ListenerAdapter;
+import gov.nasa.jpf.annotation.JPFOption;
+import gov.nasa.jpf.annotation.JPFOptions;
 import gov.nasa.jpf.search.Search;
 import gov.nasa.jpf.vm.VM;
+import gov.nasa.jpf.vm.ThreadInfo.InterleaveState;
 import gov.nasa.jpf.vm.Step;
+import gov.nasa.jpf.vm.ThreadInfo;
+import gov.nasa.jpf.vm.Instruction;
+import gov.nasa.jpf.vm.StackFrame;
 import gov.nasa.jpf.vm.Transition;
+import gov.nasa.jpf.vm.ApplicationContext;
+import gov.nasa.jpf.vm.ChoiceGenerator;
+import gov.nasa.jpf.vm.choice.ThreadChoiceFromSet;
+import gov.nasa.jpf.vm.GlobalSchedulingPoint;
 
 import java.io.BufferedWriter;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /*
@@ -54,6 +65,12 @@ import java.util.List;
  * @date 7/17/05
  * @author Masoud Mansouri-Samani (Extended to also generate the gdf graph)
  */
+@JPFOptions({
+  @JPFOption(type = "Boolean", key = "state_space_dot.gdf", defaultValue= "false", comment = "Generate the graph in GDF format. The default is DOT"),
+  @JPFOption(type = "Boolean", key = "state_space_dot.transition_numbers", defaultValue = "false", comment="Include transition numbers in transition labels"),
+  @JPFOption(type = "Boolean", key = "state_space_dot.show_source", defaultValue = "false", comment = "Include source lines in transition labels"),
+  @JPFOption(type = "Boolean", key = "state_space_dot.labelvisible", defaultValue = "false", comment = "Indicates if the label on the transitions is visible (used only with the -gdf option)")
+})
 public class StateSpaceDot extends ListenerAdapter {
   // NODE styles constants
   static final int RECTANGLE = 1;
@@ -84,6 +101,11 @@ public class StateSpaceDot extends ListenerAdapter {
   private static boolean labelvisible=false;
   private static boolean helpRequested=false;
 
+  private String trace_method;
+  private boolean isInterleavingEnabled;
+  private boolean isInterleavingSyncDisabled;
+  private ChoiceGenerator<?> interleaveCG;
+
 
   /* In gdf format all the edges must come after all the nodes of the graph
    * are generated. So we first output the nodes as we come across them but
@@ -96,8 +118,101 @@ public class StateSpaceDot extends ListenerAdapter {
 
   public StateSpaceDot(Config conf, JPF jpf) {
 
+    if (conf.getBoolean("state_space_dot.gdf"))
+    {
+      format=GDF_FORMAT;
+      out_filename=OUT_FILENAME_NO_EXT+"."+GDF_EXT;
+    }
+
+    transition_numbers = conf.getBoolean("state_space_dot.transition_numbers");
+    show_source = conf.getBoolean("state_space_dot.show_source");
+    labelvisible = conf.getBoolean("state_space_dot.labelvisible");
+    isInterleavingEnabled = conf.getBoolean("cg.enable_interleave", false);
+    isInterleavingSyncDisabled = conf.getBoolean("cg.disable_interleave_sync", false);
+    
     VM vm = jpf.getVM();
     vm.recordSteps(true);
+  }
+
+  @Override
+  public void threadStarted(VM vm, ThreadInfo startedThread) {
+    if (isInterleavingEnabled) {
+      startedThread.setInterleaveState(ThreadInfo.InterleaveState.ATOMIC);
+    }
+  }
+
+  @Override
+  public void choiceGeneratorRegistered (VM vm, ChoiceGenerator<?> nextCG, ThreadInfo currentThread, Instruction executedInstruction) {
+    if (isInterleavingEnabled) {
+      if ((nextCG instanceof ThreadChoiceFromSet) && (nextCG != interleaveCG)) {
+        ThreadInfo[] allThreadChoices = ((ThreadChoiceFromSet)nextCG).getAllThreadChoices();
+        ArrayList<ThreadInfo> choices = new ArrayList<ThreadInfo>(Arrays.asList(allThreadChoices));
+        ArrayList<ThreadInfo> exitChoices = new ArrayList<ThreadInfo>();
+
+        if (nextCG.getId().equals("ROOT")) {
+          currentThread.setInterleaveState(ThreadInfo.InterleaveState.ATOMIC);
+        } else if (currentThread.getState() == ThreadInfo.State.TERMINATED) {
+          assert (currentThread.getInterleaveState() == ThreadInfo.InterleaveState.ATOMIC) : 
+            "JPF verify thread interleaving terminating thread not in atomic state.";
+        }
+
+        int choice = 0;
+        while (choice < choices.size()) {
+          switch (choices.get(choice).getInterleaveState()) {
+            case EXITING:
+              if (isInterleavingSyncDisabled == false) {
+                exitChoices.add(choices.remove(choice));
+                break;
+              } else {
+                choices.get(choice).setInterleaveState(ThreadInfo.InterleaveState.ATOMIC);
+              }
+            case ATOMIC:  
+              choices = new ArrayList<ThreadInfo>(Arrays.asList(choices.get(choice)));
+            case RUNNING: 
+              choice++; 
+              break;
+
+            case DISABLED:
+              assert (false) : "JPF verify thread interleaving is disabled.";
+          }
+        }
+
+        if (choices.size() == 0) {
+          for (ThreadInfo thread : exitChoices) {
+            thread.setInterleaveState(ThreadInfo.InterleaveState.ATOMIC);
+          }
+
+          choices = new ArrayList<ThreadInfo>(Arrays.asList(exitChoices.get(0)));
+        }
+
+        if (choices.size() != allThreadChoices.length) {
+          interleaveCG = 
+            new ThreadChoiceFromSet(nextCG.getId(), choices.toArray(new ThreadInfo[choices.size()]), nextCG.isSchedulingPoint());
+          vm.getSystemState().removeNextChoiceGenerator();
+          vm.getSystemState().setNextChoiceGenerator(interleaveCG);
+  
+          ChoiceGenerator<?> prevCG = nextCG.getPreviousChoiceGenerator();
+          while (prevCG.isCascaded() && prevCG.hasMoreChoices()) {
+            prevCG.advance();
+          }
+  
+          ApplicationContext appCtx = currentThread.getApplicationContext();
+          if(vm.getThreadList().hasProcessTimeoutRunnables(appCtx) == false) {
+            GlobalSchedulingPoint.setGlobal(interleaveCG);
+          }
+        }
+
+        if (choices.get(0).getInterleaveState() == ThreadInfo.InterleaveState.RUNNING) {
+          if (vm.getSystemState().isAtomic()) {
+            vm.getSystemState().clearAtomic();
+          }
+        } else {
+          if (vm.getSystemState().isAtomic() == false) {
+            vm.getSystemState().incAtomic();
+          }
+        }
+      }
+    }
   }
 
   @Override
@@ -115,10 +230,17 @@ public class StateSpaceDot extends ListenerAdapter {
   }
 
   @Override
+  public void executeInstruction(VM vm, ThreadInfo currentThread, Instruction instructionToExecute) {
+    trace_method = instructionToExecute.getMethodInfo().getClassInfo().getName() + '.' + 
+                   instructionToExecute.getMethodInfo().getName();
+  }
+
+  @Override
   public void stateAdvanced(Search search) {
     int id = search.getStateId();
-    boolean has_next =search.hasNextState();
+    boolean has_next = search.hasNextState();
     boolean is_new = search.isNewState();
+
     try {
       if (format==DOT_FORMAT) {
         graph.write("/* searchAdvanced(" + id + ", " + makeDotLabel(search, id) +
@@ -127,11 +249,14 @@ public class StateSpaceDot extends ListenerAdapter {
       }
       if (prev_state != null) {
         addEdge(prev_state.id, id, search);
+        addNode(prev_state);
+        prev_state.reset(id, has_next, is_new);
       } else {
         prev_state = new StateInformation();
+        addNode(prev_state);
+        addEdge(prev_state.id, id, search);
+        prev_state.reset(id, has_next, is_new);
       }
-      addNode(prev_state);
-      prev_state.reset(id, has_next, is_new);
     } catch (IOException e) {}
   }
 
@@ -250,23 +375,23 @@ public class StateSpaceDot extends ListenerAdapter {
     result.append("Thd");
     result.append(thread);
     result.append(':');
-    result.append(last_trans_step.toString());
 
-    if (show_source) {
-      String source_line=last_trans_step.getLineString();
-      if ((source_line != null) && !source_line.equals("")) {
-        result.append("\\n");
-
-        StringBuilder sb=new StringBuilder(source_line);
-
-        // We need to precede the dot-specific special characters which appear
-        // in the Java source line, such as ']' and '"', with the '\' escape
-        // characters and also to remove any new lines.
-
-        replaceString(sb, "\n", "");
-        replaceString(sb, "]", "\\]");
-        replaceString(sb, "\"", "\\\"");
-        result.append(sb.toString());
+    ThreadInfo currentThread = state.getVM().getCurrentThread();
+    if (currentThread.countStackFrames() == 0) {
+      result.append(trace_method);
+    }
+    else {
+      for (StackFrame sf = currentThread.getTopFrame(); sf != null; sf = sf.getPrevious()) {
+        if ((sf.getMethodInfo().getClassInfo().isSystemClass() == false) &&
+            (sf.getMethodInfo().getClassInfo().getName().startsWith("gov.nasa.jpf") == false)) {
+          Instruction insn = sf.getPC();
+          result.append(insn.getFilePos());
+          if (show_source) {
+            result.append("\\n");
+            result.append(insn.getSourceOrLocation().trim());
+          }
+          break;
+        }
       }
     }
 
@@ -367,7 +492,7 @@ public class StateSpaceDot extends ListenerAdapter {
             graph.write(",green");
           }
       } else { // The dot version
-        graph.write("  st" + state.id + " [label=\"" + state.id);
+        graph.write("  \"st" + state.id + "\" [label=\"" + state.id);
         if (state.error != null) {
           graph.write(":" + state.error);
         }
@@ -396,7 +521,7 @@ public class StateSpaceDot extends ListenerAdapter {
     int id = -1;
     boolean has_next = true;
     String error = null;
-    boolean is_new = false;
+    boolean is_new = true;
   }
 
   /**
@@ -471,12 +596,13 @@ public class StateSpaceDot extends ListenerAdapter {
       gdfEdges.add(
       	makeGdfEdgeString("tr"+my_id, "st"+new_id, lastOutputLabel, thread));
     } else { // DOT
-      graph.write("  st" + old_id + " -> tr" + my_id + ";");
+      graph.write("  \"st" + old_id + "\" -> \"tr" + my_id + "\";");
       graph.newLine();
-      graph.write("  tr" + my_id + " [label=\"" + makeDotLabel(state, my_id) +
+      graph.write("  \"tr" + my_id + "\" [label=\"" + makeDotLabel(state, my_id) +
                   "\",shape=box]");
       graph.newLine();
-      graph.write("  tr" + my_id + " -> st" + new_id + ";");
+      graph.write("  \"tr" + my_id + "\" -> \"st" + new_id + "\";");
+      graph.newLine();
     }
   }
 

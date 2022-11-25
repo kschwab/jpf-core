@@ -77,6 +77,13 @@ public class ThreadInfo extends InfoObject
     SLEEPING
   };
 
+  public enum InterleaveState {
+    DISABLED,
+    ATOMIC,
+    RUNNING,
+    EXITING
+  };
+
   static final int[] emptyRefArray = new int[0];
   static final String MAIN_NAME = "main";
   
@@ -1182,6 +1189,16 @@ public class ThreadInfo extends InfoObject
    */
   public int getLockCount () {
     return threadData.lockCount;
+  }
+
+  public InterleaveState getInterleaveState () {
+    return threadData.interleaveState;
+  }
+
+  public void setInterleaveState (InterleaveState interleaveState) {
+    if (threadData.interleaveState != interleaveState) {
+      threadDataClone().interleaveState = interleaveState;
+    }
   }
 
   // avoid use in performance critical code
