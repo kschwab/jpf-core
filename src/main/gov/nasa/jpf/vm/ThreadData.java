@@ -41,6 +41,8 @@ public class ThreadData {
   /** is this a daemon thread */
   boolean isDaemon;
 
+  ThreadInfo.InterleaveState interleaveState = ThreadInfo.InterleaveState.DISABLED;
+
   /**
    * The lock counter when the object got into a wait. This value
    * is used to restore the object lock count once this thread
@@ -60,6 +62,7 @@ public class ThreadData {
     ThreadData t = new ThreadData();
 
     t.state = state;
+    t.interleaveState = interleaveState;
     t.lockCount = lockCount;
     t.suspendCount = suspendCount;
 
@@ -79,6 +82,7 @@ public class ThreadData {
     ThreadData t = (ThreadData) o;
 
     return ((state == t.state) && 
+            (interleaveState == t.interleaveState) && 
             (priority == t.priority) &&
             (isDaemon == t.isDaemon) && 
             (lockCount == t.lockCount) &&
@@ -88,6 +92,7 @@ public class ThreadData {
 
   public void hash (HashData hd) {
     hd.add(state);
+    hd.add(interleaveState);
     hd.add(lockCount);
     hd.add(suspendCount);
     hd.add(priority);
@@ -115,6 +120,8 @@ public class ThreadData {
     sb.append(name);
     sb.append(",status:");
     sb.append(state.name());
+    sb.append(",interleaveState:");
+    sb.append(interleaveState);
     sb.append(",priority:");
     sb.append(priority);
     sb.append(",isDaemon:");

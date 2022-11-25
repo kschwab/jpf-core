@@ -221,6 +221,10 @@ public class Verify {
    */
   public static void endAtomic () {}
 
+  public static void startInterleaving () {}
+  
+  public static void stopInterleaving () {}
+
   public static void boring (boolean cond) {}
 
   public static void busyWait (long duration) {

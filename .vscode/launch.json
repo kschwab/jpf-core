@@ -1,0 +1,376 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "java",
+            "name": "Launch Current File",
+            "request": "launch",
+            "mainClass": "${file}"
+        },
+        {
+            "type": "java",
+            "name": "Launch BoundedBuffer",
+            "request": "launch",
+            "mainClass": "BoundedBuffer",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch ConcurrentCount",
+            "request": "launch",
+            "mainClass": "ConcurrentCount",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch Crossing",
+            "request": "launch",
+            "mainClass": "Crossing",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch DiningPhil",
+            "request": "launch",
+            "mainClass": "DiningPhil",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch HelloWorld",
+            "request": "launch",
+            "mainClass": "HelloWorld",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch NumericValueCheck",
+            "request": "launch",
+            "mainClass": "NumericValueCheck",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch PolDetMain",
+            "request": "launch",
+            "mainClass": "PolDet.PolDetMain",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch Racer",
+            "request": "launch",
+            "mainClass": "Racer",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch Rand",
+            "request": "launch",
+            "mainClass": "Rand",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch RobotManager",
+            "request": "launch",
+            "mainClass": "RobotManager",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch StopWatch",
+            "request": "launch",
+            "mainClass": "StopWatch",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch TestExample",
+            "request": "launch",
+            "mainClass": "TestExample",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch JPF",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.JPF",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch ClassFilePrinter",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.jvm.ClassFilePrinter",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch LogConsole",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.listener.LogConsole",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch ConsolePublisherTest",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.test.basic.ConsolePublisherTest",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch TestJPFMainTest",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.test.basic.TestJPFMainTest",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch ConstructorTest",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.test.java.lang.reflect.ConstructorTest",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch FieldTest",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.test.java.lang.reflect.FieldTest",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch MethodTest",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.test.java.lang.reflect.MethodTest",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch CalendarTest",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.test.java.util.CalendarTest",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch SharedPropagationTest$Hyber",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.test.mc.basic.SharedPropagationTest$Hyber",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch SharedPropagationTest$T1",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.test.mc.basic.SharedPropagationTest$T1",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch SharedPropagationTest$T2",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.test.mc.basic.SharedPropagationTest$T2",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch SharedPropagationTest$T3",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.test.mc.basic.SharedPropagationTest$T3",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch BitFlipTest",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.test.mc.data.BitFlipTest",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch PerturbatorTest",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.test.mc.data.PerturbatorTest",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch ThreadExceptionHandlerTest",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.test.vm.threads.ThreadExceptionHandlerTest",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch GenPeer",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.tool.GenPeer",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch LogConsole(1)",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.tool.LogConsole",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch PrintEvents",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.tool.PrintEvents",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch RunJPF",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.tool.RunJPF",
+            "projectName": "jpf-core",
+            "classPaths": [
+                "${workspaceFolder}${pathSeparator}build${pathSeparator}main",
+                "${workspaceFolder}${pathSeparator}build${pathSeparator}test",
+                "${workspaceFolder}${pathSeparator}build${pathSeparator}annotations",
+                "${workspaceFolder}${pathSeparator}build${pathSeparator}classes",
+                "${workspaceFolder}${pathSeparator}build${pathSeparator}examples",
+                "${workspaceFolder}${pathSeparator}build${pathSeparator}peers"
+            ],
+            "args": "+classpath=. ${command:SpecifyProgramArgs}",
+            "vmArgs": "-Xmx1G -ea"
+        },
+        {
+            "type": "java",
+            "name": "Launch RunJPF Debug",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.tool.RunJPF",
+            "projectName": "jpf-core",
+            "classPaths": [
+                "${workspaceFolder}${pathSeparator}build${pathSeparator}main",
+                "${workspaceFolder}${pathSeparator}build${pathSeparator}test",
+                "${workspaceFolder}${pathSeparator}build${pathSeparator}annotations",
+                "${workspaceFolder}${pathSeparator}build${pathSeparator}classes",
+                "${workspaceFolder}${pathSeparator}build${pathSeparator}examples",
+                "${workspaceFolder}${pathSeparator}build${pathSeparator}peers"],
+            "args": "+classpath=. ${command:SpecifyProgramArgs}",
+            "stopOnEntry": true
+        },
+        {
+            "type": "java",
+            "name": "Launch RunTest",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.tool.RunTest",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch BitSet1024Test",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.util.BitSet1024Test",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch BitSet256Test",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.util.BitSet256Test",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch BitSet64Test",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.util.BitSet64Test",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch SimplePool",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.util.SimplePool",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch SparseClusterArrayTest",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.util.SparseClusterArrayTest",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch SparseIntVector",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.util.SparseIntVector",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch SparseObjVector",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.util.SparseObjVector",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch StringExpander",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.util.StringExpander",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch StringSetMatcher",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.util.StringSetMatcher",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch WeakPool",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.util.WeakPool",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch ESParser",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.util.script.ESParser",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch SequenceInterpreter",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.util.script.SequenceInterpreter",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch JenkinsStateSet",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.vm.JenkinsStateSet",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch StackFrameTest",
+            "request": "launch",
+            "mainClass": "gov.nasa.jpf.vm.StackFrameTest",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
+            "name": "Launch oldclassic",
+            "request": "launch",
+            "mainClass": "oldclassic",
+            "projectName": "jpf-core"
+        }
+    ]
+}
