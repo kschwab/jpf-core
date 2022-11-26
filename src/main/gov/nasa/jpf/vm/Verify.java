@@ -221,9 +221,9 @@ public class Verify {
    */
   public native static void endAtomic ();
 
-  public native static void startInterleaving () {}
+  public native static void startInterleaving ();
 
-  public native static void stopInterleaving () {}
+  public native static void stopInterleaving ();
 
   public native static void boring (boolean cond);
 

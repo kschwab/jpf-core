@@ -1,5 +1,3 @@
-package PolDet;
-
 /*
  * Copyright (C) 2021 Pu Yi
  *
