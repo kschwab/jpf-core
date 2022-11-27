@@ -29,9 +29,15 @@ public class RacerInterleave implements Runnable {
      boolean isEnableSecondInterleave;
      int nonRaceVariable = 2;
      public static void main (String[] args) {
-          switch (19)
+          int testCase = 19;
+          if (args.length > 0) {
+               try {
+                    testCase = Integer.valueOf(args[0]);
+               } catch (NumberFormatException ex) {}
+          }
+
+          switch (testCase)
           {
-               case -1: testNoInterleave(); break;
                case 0:  testInterleaveMainOnly(); break;
                case 1:  testInterleaveMainAndThread1Only_A(); break;
                case 2:  testInterleaveMainAndThread1Only_B(); break;
@@ -52,6 +58,9 @@ public class RacerInterleave implements Runnable {
                case 17: testTwoInterleavesThread1And2Only(); break;
                case 18: testTwoInterleavesAll_A(); break;
                case 19: testTwoInterleavesAll_B(); break;
+
+               default:
+               case 20: testNoInterleave(); break;
           }
      }
 
