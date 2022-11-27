@@ -10,6 +10,8 @@ There are two options available for installing, building, and running the projec
 
 ### Using Docker
 
+Instructions for installing Docker onto your system can be found [here](https://docs.docker.com/engine/install/#server).
+
 Before running any project commands, enter the docker environment first:
 
 ```bash
