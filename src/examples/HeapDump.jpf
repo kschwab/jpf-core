@@ -1,0 +1,4 @@
+target=HeapDump
+
+listener=gov.nasa.jpf.listener.StateSpaceDot
+listener=gov.nasa.jpf.listener.HeapTracker

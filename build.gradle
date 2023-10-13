@@ -22,6 +22,7 @@ buildscript {
 dependencies {
     testImplementation "junit:junit:4.12"
     testCompile "org.ow2.asm:asm:7.1"
+    compile fileTree(dir: '/opt/kaitai/src/main/java', include: '**/*.jar')
 }
 
 task copyLibs(type: Copy) {

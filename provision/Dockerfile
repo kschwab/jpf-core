@@ -1,25 +1,21 @@
-FROM --platform=linux/amd64 openjdk:8 AS build-image
+FROM --platform=linux/amd64 openjdk:8
 
 # Install packages
-RUN apt-get update \
-    && apt-get install graphviz -y \
+RUN curl -LO https://github.com/kaitai-io/kaitai_struct_compiler/releases/download/0.10/kaitai-struct-compiler_0.10_all.deb \
+    && apt-get update && apt-get install -y \
+        graphviz \
+        ./kaitai-struct-compiler_0.10_all.deb \
+        ruby \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* ./kaitai-struct-compiler_0.10_all.deb \
+    && gem install kaitai-struct-visualizer
 
-# Install gradle
-RUN git clone https://github.com/kschwab/jpf-core.git /tmp/jpf-core \
-    && GRADLE_USER_HOME=/opt/.gradle /tmp/jpf-core/gradlew --version \
-    && chmod -R a+rwx /opt/.gradle
+# Install Kaitai runtime library for Java
+RUN git clone https://github.com/kaitai-io/kaitai_struct_java_runtime.git /opt/kaitai \
+    && cd /opt/kaitai/src/main/java \
+    && find . -name *.java -exec javac {} \; \
+    && jar cvf kaitai.jar $(find . -name *.class)
 
-# Install entrypoint.py and pysu.py scripts
-COPY entrypoint.py pysu.py /usr/local/bin/
-
-FROM openjdk:8 AS runtime-image
+ENV CLASSPATH=".:/opt/kaitai/src/main/java/kaitai.jar"
 LABEL org.opencontainers.image.source=https://github.com/kschwab/jpf-core
 LABEL org.opencontainers.image.description="Kyle Schwab PhD Computing Artifact"
-COPY --from=build-image / /
-
-RUN rm -rf /tmp/*
-ENV GRADLE_USER_HOME=/opt/.gradle
-
-ENTRYPOINT ["/usr/local/bin/entrypoint.py"]
