@@ -6,6 +6,13 @@
     "configurations": [
         {
             "type": "java",
+            "name": "Launch HeapDump",
+            "request": "launch",
+            "mainClass": "HeapDump",
+            "projectName": "jpf-core"
+        },
+        {
+            "type": "java",
             "name": "Launch Current File",
             "request": "launch",
             "mainClass": "${file}"
@@ -256,7 +263,8 @@
                 "${workspaceFolder}${pathSeparator}build${pathSeparator}annotations",
                 "${workspaceFolder}${pathSeparator}build${pathSeparator}classes",
                 "${workspaceFolder}${pathSeparator}build${pathSeparator}examples",
-                "${workspaceFolder}${pathSeparator}build${pathSeparator}peers"],
+                "${workspaceFolder}${pathSeparator}build${pathSeparator}peers",
+                "/opt/kaitai/src/main/java/kaitai.jar"],
             "args": "+classpath=. ${command:SpecifyProgramArgs}",
             "stopOnEntry": true
         },

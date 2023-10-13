@@ -20,6 +20,9 @@ dockerw_defaults = [
     f'-v {ROOT_PATH}:/app',
     f'-e GRADLE_USER_HOME={TMP_JPF_CORE_GRADLE_PATH}',
     f'-v {TMP_JPF_CORE_GRADLE_PATH}:{TMP_JPF_CORE_GRADLE_PATH}',
+    '--prompt-banner=phd-computing-artifact-0.2',
     '--name=phd-computing-artifact-0.2',
-    '--image-default=ghcr.io/kschwab/jpf-core/phd-computing-artifact:0.1'
+    '--default-image=ghcr.io/kschwab/jpf-core/phd-computing-artifact:0.2',
+    '--auto-attach',
+    '--default-shell=bash'
 ]

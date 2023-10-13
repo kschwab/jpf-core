@@ -29,6 +29,7 @@ repositories {
 dependencies {
     testImplementation 'org.ow2.asm:asm:9.5'
     testImplementation('junit:junit:4.13.1')
+    compile fileTree(dir: '/opt/kaitai/src/main/java', include: '**/*.jar')
 }
 
 configurations {
