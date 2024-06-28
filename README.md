@@ -19,15 +19,16 @@ Before running any project commands, enter the docker environment first:
 ./dockerw run
 
 # You should be greeted with the below prompt if successful
-📦ghcr.io/kschwab/jpf-core/phd-computing-artifact:0.1
-[username@hostname app]$
+📦phd-computing-artifact-X.Y
+username@hostname /jpf-core
+$
 ```
 
 While not necessary, the docker container can be built locally if desired:
 
 ```bash
 # From root of project repo
-./provision/build_docker.sh
+./provision/build_docker.bash
 ```
 
 ## Project Artifacts

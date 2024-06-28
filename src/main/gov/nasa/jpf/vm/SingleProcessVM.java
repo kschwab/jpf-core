@@ -20,6 +20,8 @@ package gov.nasa.jpf.vm;
 import java.util.HashMap;
 import java.util.Map;
 
+import org.eclipse.mat.snapshot.ISnapshot; // Build verify placeholder
+
 import gov.nasa.jpf.Config;
 import gov.nasa.jpf.JPF;
 import gov.nasa.jpf.JPFConfigException;

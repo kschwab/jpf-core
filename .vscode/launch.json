@@ -263,9 +263,10 @@
                 "${workspaceFolder}${pathSeparator}build${pathSeparator}annotations",
                 "${workspaceFolder}${pathSeparator}build${pathSeparator}classes",
                 "${workspaceFolder}${pathSeparator}build${pathSeparator}examples",
-                "${workspaceFolder}${pathSeparator}build${pathSeparator}peers",
-                "/opt/kaitai/src/main/java/kaitai.jar"],
+                "${workspaceFolder}${pathSeparator}build${pathSeparator}peers"
+            ],
             "args": "+classpath=. ${command:SpecifyProgramArgs}",
+            "vmArgs": "-Xmx1G -ea",
             "stopOnEntry": true
         },
         {

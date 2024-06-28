@@ -22,7 +22,7 @@ buildscript {
 dependencies {
     testImplementation "junit:junit:4.12"
     testCompile "org.ow2.asm:asm:7.1"
-    compile fileTree(dir: '/opt/kaitai/src/main/java', include: '**/*.jar')
+    compile fileTree(dir: '/opt/org.eclipse.mat/org.eclipse.mat.product/target/products/org.eclipse.mat.ui.rcp.MemoryAnalyzer/linux/gtk/x86_64/mat/plugins', include: '**/*.jar')
 }
 
 task copyLibs(type: Copy) {
