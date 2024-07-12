@@ -1,5 +1,4 @@
 {
     "java.debug.settings.onBuildFailureProceed": true,
-    "java.debug.settings.forceBuildBeforeLaunch": false,
     "java.configuration.updateBuildConfiguration": "interactive"
 }
