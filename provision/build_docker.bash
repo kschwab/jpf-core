@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION=0.3
+VERSION=0.4
 CREATED=$(date --rfc-3339 seconds)
 PROVISION_DIR=$(dirname "$0")
 

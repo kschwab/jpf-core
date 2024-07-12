@@ -29,7 +29,7 @@ repositories {
 dependencies {
     testImplementation 'org.ow2.asm:asm:9.5'
     testImplementation('junit:junit:4.13.1')
-    compile fileTree(dir: '/opt/org.eclipse.mat/org.eclipse.mat.product/target/products/org.eclipse.mat.ui.rcp.MemoryAnalyzer/linux/gtk/x86_64/mat/plugins', include: '**/*.jar')
+    implementation fileTree(dir: '/opt/mat/plugins', include: '**/*.jar')
 }
 
 configurations {

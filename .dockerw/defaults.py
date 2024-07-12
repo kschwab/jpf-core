@@ -2,6 +2,7 @@ import os
 import platform
 import pathlib
 
+VERSION = '0.4'
 ROOT_PATH = pathlib.PosixPath(__file__).resolve().parent.parent
 TMP_JPF_CORE_GRADLE_PATH = pathlib.Path('/tmp/jpf-core/gradle')
 TMP_JPF_CORE_GRADLE_PATH.mkdir(parents=True, exist_ok=True)
@@ -20,9 +21,9 @@ dockerw_defaults = [
     f'-v {ROOT_PATH}:{WORKDIR_PATH}',
     f'-e GRADLE_USER_HOME={TMP_JPF_CORE_GRADLE_PATH}',
     f'-v {TMP_JPF_CORE_GRADLE_PATH}:{TMP_JPF_CORE_GRADLE_PATH}',
-    '--prompt-banner=phd-computing-artifact-0.3',
-    '--name=phd-computing-artifact-0.3',
-    '--default-image=ghcr.io/kschwab/jpf-core/phd-computing-artifact:0.3',
+    f'--prompt-banner=phd-computing-artifact-{VERSION}',
+    f'--name=phd-computing-artifact-{VERSION}',
+    f'--default-image=ghcr.io/kschwab/jpf-core/phd-computing-artifact:{VERSION}',
     '--auto-attach',
     '--default-shell=bash'
 ]
