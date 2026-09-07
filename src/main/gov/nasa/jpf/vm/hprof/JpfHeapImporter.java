@@ -3,11 +3,13 @@ package gov.nasa.jpf.vm.hprof;
 import com.squareup.haha.perflib.ArrayInstance;
 import com.squareup.haha.perflib.ClassInstance;
 import com.squareup.haha.perflib.ClassObj;
+import com.squareup.haha.perflib.Field;
 import com.squareup.haha.perflib.Instance;
 import com.squareup.haha.perflib.Type;
 import gov.nasa.jpf.vm.ClassInfo;
 import gov.nasa.jpf.vm.ClassLoaderInfo;
 import gov.nasa.jpf.vm.ElementInfo;
+import gov.nasa.jpf.vm.FieldInfo;
 import gov.nasa.jpf.vm.MJIEnv;
 import gov.nasa.jpf.vm.ThreadInfo;
 import gov.nasa.jpf.vm.VM;
@@ -86,40 +88,53 @@ public final class JpfHeapImporter {
       for (ClassInstance instance : selectedInstances) {
         int jpfRef = mappedRef(instance.getId(), "selected object");
         ElementInfo ei = jpfHeap.getModifiable(jpfRef);
-        for (ClassInstance.FieldValue fieldValue : instance.getValues()) {
-          String fieldName = fieldValue.getField().getName();
-          Type fieldType = fieldValue.getField().getType();
-          Object value = fieldValue.getValue();
+        for (DeclaredFieldValue fieldValue : declaredFieldValues(instance)) {
+          String fieldName = fieldValue.field.getName();
+          String declaringClassName = fieldValue.declaringClass.getClassName();
+          Type fieldType = fieldValue.field.getType();
+          Object value = fieldValue.value;
+          ClassInfo declaringCi =
+              ClassLoaderInfo.getSystemResolvedClassInfo(declaringClassName);
+          FieldInfo jpfField = declaringCi.getDeclaredInstanceField(fieldName);
+          require(jpfField != null,
+              fieldDescription(declaringClassName, fieldName) + " has no matching JPF FieldInfo");
           if (fieldType == Type.INT) {
+            require(jpfField.isIntField(),
+                fieldDescription(declaringClassName, fieldName) + " is not a JPF int field");
             require(value instanceof Integer,
-                fieldDescription(instance, fieldName) + " did not contain an Integer");
+                fieldDescription(declaringClassName, fieldName) + " did not contain an Integer");
             int intValue = (Integer) value;
-            ei.setIntField(fieldName, intValue);
+            ei.setIntField(jpfField, intValue);
             primitiveFields++;
             System.out.printf("[HPROF-JPF] field HPROF=0x%x JPF=%d class=%s field=%s value=%d%n",
-                instance.getId(), jpfRef, instance.getClassObj().getClassName(), fieldName, intValue);
+                instance.getId(), jpfRef, declaringClassName, fieldName, intValue);
           } else if (fieldType == Type.OBJECT) {
+            require(jpfField.isReference(),
+                fieldDescription(declaringClassName, fieldName) + " is not a JPF reference field");
             int targetRef = MJIEnv.NULL;
             long targetId = 0;
             String targetClass = "null";
             if (value != null) {
               require(value instanceof Instance,
-                  fieldDescription(instance, fieldName) + " is not represented by an Instance");
+                  fieldDescription(declaringClassName, fieldName)
+                      + " is not represented by an Instance");
               Instance target = (Instance) value;
               targetId = target.getId();
-              targetRef = mappedRef(targetId, fieldDescription(instance, fieldName) + " target");
+              targetRef = mappedRef(targetId,
+                  fieldDescription(declaringClassName, fieldName) + " target");
               targetClass = target instanceof ArrayInstance
                   ? jpfHeap.get(targetRef).getClassInfo().getName()
                   : target.getClassObj().getClassName();
             }
-            ei.setReferenceField(fieldName, targetRef);
+            ei.setReferenceField(jpfField, targetRef);
             references++;
             System.out.printf("[HPROF-JPF] reference HPROF=0x%x JPF=%d class=%s field=%s "
                     + "targetHPROF=0x%x targetJPF=%d targetClass=%s%n",
-                instance.getId(), jpfRef, instance.getClassObj().getClassName(), fieldName,
+                instance.getId(), jpfRef, declaringClassName, fieldName,
                 targetId, targetRef, targetClass);
           } else {
-            throw unsupported(fieldDescription(instance, fieldName) + " has type " + fieldType);
+            throw unsupported(
+                fieldDescription(declaringClassName, fieldName) + " has type " + fieldType);
           }
         }
       }
@@ -168,6 +183,27 @@ public final class JpfHeapImporter {
           throw unsupported("selected array payload has type " + array.getArrayType());
         }
       }
+    }
+
+    private List<DeclaredFieldValue> declaredFieldValues(ClassInstance instance) {
+      List<ClassInstance.FieldValue> flattened = instance.getValues();
+      List<DeclaredFieldValue> declared = new ArrayList<>(flattened.size());
+      int index = 0;
+      for (ClassObj declaring = instance.getClassObj();
+          declaring != null; declaring = declaring.getSuperClassObj()) {
+        for (Field field : declaring.getFields()) {
+          require(index < flattened.size(),
+              "HAHA field hierarchy exceeds flattened values for " + instance.getClassObj().getClassName());
+          ClassInstance.FieldValue value = flattened.get(index++);
+          require(value.getField() == field,
+              "HAHA flattened field order disagrees with ClassObj hierarchy at "
+                  + fieldDescription(declaring.getClassName(), field.getName()));
+          declared.add(new DeclaredFieldValue(declaring, field, value.getValue()));
+        }
+      }
+      require(index == flattened.size(),
+          "HAHA flattened values exceed field hierarchy for " + instance.getClassObj().getClassName());
+      return declared;
     }
 
     private void collectSelectedInstances() {
@@ -246,6 +282,18 @@ public final class JpfHeapImporter {
     }
   }
 
+  private static final class DeclaredFieldValue {
+    final ClassObj declaringClass;
+    final Field field;
+    final Object value;
+
+    DeclaredFieldValue(ClassObj declaringClass, Field field, Object value) {
+      this.declaringClass = declaringClass;
+      this.field = field;
+      this.value = value;
+    }
+  }
+
   public static final class ImportResult {
     private final Map<Long, Integer> refMap;
     private final int allocatedObjects;
@@ -280,7 +328,11 @@ public final class JpfHeapImporter {
   }
 
   private static String fieldDescription(ClassInstance instance, String fieldName) {
-    return instance.getClassObj().getClassName() + "." + fieldName;
+    return fieldDescription(instance.getClassObj().getClassName(), fieldName);
+  }
+
+  private static String fieldDescription(String declaringClassName, String fieldName) {
+    return declaringClassName + "." + fieldName;
   }
 
   private static UnsupportedOperationException unsupported(String message) {

@@ -97,7 +97,14 @@ Currently supported within selected classes is deliberately limited to `Type.INT
 | cycles through object arrays | verified |
 | shared identity across field/array edges | verified |
 | GC preservation of object arrays | verified |
-| inherited fields | unverified |
+| inherited primitive instance field | verified |
+| inherited object-reference field | verified |
+| superclass/subclass reference aliasing | verified |
+| field hiding / same-name superclass-subclass fields | verified |
+| declaring-class-aware field identity | verified |
+| inheritance preservation through modeled execution | verified |
+| inheritance preservation through JPF GC | verified |
+
 | HPROF statics | unsupported |
 | HPROF GC roots | unsupported |
 | `String` | unsupported |
@@ -191,6 +198,8 @@ Pass A and Pass B.1 through B.4 are complete. The reconstructed JPF graph has `F
 **PASS E.1 — GRAPH IDENTITY SEMANTICS: COMPLETE**
 
 **PASS E.2 — OBJECT-ARRAY TOPOLOGY: COMPLETE**
+
+**PASS E.3 — INHERITANCE / FIELD-LAYOUT FIDELITY: COMPLETE**
 
 The same reconstructed Foo is bound to modeled `HprofPassASmokeGraph.root`, and ordinary bytecode in `HprofPassASmokeTarget.main()` reads and validates the complete graph.
 
@@ -422,3 +431,59 @@ Two consecutive ./gradlew hprofObjectArrayTest --no-daemon runs succeeded. Separ
 Current limitation: object arrays are directly referenced, one-dimensional arrays only; their non-null elements must be among explicitly selected ordinary classes. No arbitrary recursive heap traversal was added.
 
 Recommended next semantic dimension: inherited instance fields, because they test field-layout fidelity without adding scalar types.
+
+## Pass E.3 — Inheritance / Field-Layout Fidelity
+
+The isolated ./gradlew hprofInheritanceTest regression generates build/hprof-smoke/hprof-inheritance.hprof in a real HotSpot JVM and imports it in a separate JPF process. Its selected ordinary objects are one InheritanceGraph, one Derived, one HiddenDerived, and one Ref. Superclasses are metadata/layout contributors, not separate heap objects.
+
+The concrete state is:
+
+~~~text
+InheritanceGraph(marker=99)
+  derived -> Derived
+               Base.baseValue = 11
+               Derived.derivedValue = 22
+               Base.baseRef ------+
+               Derived.derivedRef -+-> Ref(id=7)
+  hidden -> HiddenDerived
+               HiddenBase.value = 31
+               HiddenDerived.value = 32
+~~~
+
+HAHA 2.0.4 ClassInstance.getValues() includes inherited fields. Its implementation begins with instance.getClassObj(), appends values for every Field in that ClassObj.getFields() declaration array, then repeats for getSuperClassObj() until null. Thus ordering is most-derived class first, declaration-array order within each class, followed by each superclass. ClassInstance.FieldValue contains only Field and value; Field contains only name and Type. Neither carries a declaring ClassObj.
+
+The importer reconstructs declaring ownership by replaying the exact hierarchy traversal implemented by HAHA while consuming the flattened values in lockstep. It requires each flattened FieldValue.getField() to be the identical Field object from the corresponding ClassObj.getFields() slot and fails on length/order disagreement. The resulting semantic identity is declaring ClassObj plus field name and HAHA type.
+
+For JPF, ClassInfo.getInstanceField(name) searches most-derived to superclass and therefore name-only mutation is ambiguous for hidden fields. E.3 instead resolves ClassLoaderInfo.getSystemResolvedClassInfo(declaringName).getDeclaredInstanceField(name). The returned FieldInfo records its declaring ClassInfo, field index, signature, and storage offset. ElementInfo.setIntField(FieldInfo, int) and setReferenceField(FieldInfo, int) write the exact slot; getIntField(FieldInfo) and getReferenceField(FieldInfo) verify it. HiddenBase.value and HiddenDerived.value have different storage offsets.
+
+Observed diagnostics:
+
+~~~text
+[HPROF-JPF] field ... class=HprofInheritanceGraph$Derived field=derivedValue value=22
+[HPROF-JPF] reference ... class=HprofInheritanceGraph$Base field=baseRef ... targetJPF=194
+[HPROF-JPF] field ... class=HprofInheritanceGraph$Base field=baseValue value=11
+[HPROF-JPF] field ... class=HprofInheritanceGraph$HiddenDerived field=value value=32
+[HPROF-JPF] field ... class=HprofInheritanceGraph$HiddenBase field=value value=31
+[HPROF-JPF] import complete: objects=4 arrays=0 mappings=4 primitiveFields=6 references=4 arrayElements=0
+[HPROF-JPF] inherited fields verified: Base.baseValue=11 Derived.derivedValue=22
+[HPROF-JPF] inherited reference alias verified: Base.baseRef=ref 194 Derived.derivedRef=ref 194
+[HPROF-JPF] hidden fields verified: HiddenBase.value=31 HiddenDerived.value=32
+[HPROF-JPF-MODEL] inheritance field layout verified
+[HPROF-JPF] inheritance controlled GC verified: cycles=1
+[HPROF-JPF-MODEL] post-GC inheritance field layout verified
+~~~
+
+The modeled target reads inherited fields through normal Java access and distinguishes hidden values by casting the same object to HiddenBase. Host validation additionally resolves both declaring FieldInfo objects and proves their storage offsets and values are distinct. The inherited and subclass references both retain the same imported Ref identity before and after GC.
+
+Two consecutive ./gradlew hprofInheritanceTest --no-daemon runs succeeded. The updated ./gradlew hprofRegressionTest --no-daemon aggregate ran the basic, graph-identity, object-array, and inheritance fixtures successfully; every JPF run ended with no errors detected.
+
+No fundamental representation loss was found. HAHA omits declaring-class information from individual FieldValue objects, but its deterministic hierarchy traversal plus the original per-ClassObj Field arrays preserve enough information to reconstruct ownership exactly. The importer checks that assumption at runtime rather than inferring ownership from names.
+
+## Session Handoff — Pass E.3
+
+- Changed: field population now reconstructs HAHA declaring-class ownership and uses JPF FieldInfo mutation; added an isolated inheritance/field-hiding fixture, validator, and durable Gradle regression.
+- Counts: objects=4, arrays=0, mappings=4, primitiveFields=6, references=4, arrayElements=0.
+- Proven: inherited int fields, inherited object references, aliasing across superclass/subclass fields, distinct same-name hidden fields, modeled access, and preservation through deliberate JPF GC.
+- Existing regressions: all remained unchanged in semantics and pass in the four-fixture aggregate.
+- Current blocker: none for Pass E.3.
+- Recommended next semantic dimension: additional primitive scalar types, implemented as a deliberate type-by-type coverage matrix rather than mixed with further topology changes.

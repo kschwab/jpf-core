@@ -623,6 +623,89 @@ tasks.register('hprofObjectArrayTest') {
     }
 }
 
+// Inheritance and hidden-field layout regression.
+def hprofInheritanceDump = file("${hprofSmokeDir}/hprof-inheritance.hprof")
+def hprofInheritanceConfig = file("${projectDir}/src/examples/HprofInheritance.jpf")
+def hprofInheritanceOutput = new ByteArrayOutputStream()
+
+tasks.register('generateHprofInheritanceDump', JavaExec) {
+    group = "verification"
+    description = "Generates the inheritance-layout HPROF fixture in a real HotSpot JVM."
+
+    dependsOn compileExamplesJava
+    classpath = files(sourceSets.examples.output)
+    mainClass = 'HprofInheritanceDumpGenerator'
+    args hprofInheritanceDump.absolutePath
+
+    outputs.file(hprofInheritanceDump)
+    outputs.upToDateWhen { false }
+
+    doFirst {
+        hprofSmokeDir.mkdirs()
+        delete hprofInheritanceDump
+        println "Generating inheritance HPROF at ${hprofInheritanceDump}"
+    }
+    doLast {
+        if (!hprofInheritanceDump.isFile() || hprofInheritanceDump.length() == 0) {
+            throw new GradleException(
+                    "HotSpot dump generator did not produce a non-empty inheritance HPROF: ${hprofInheritanceDump}")
+        }
+    }
+}
+
+tasks.register('runHprofInheritanceJpf', Exec) {
+    group = "verification"
+    description = "Runs JPF against the fresh inheritance-layout HPROF fixture."
+
+    dependsOn buildJars
+    dependsOn generateHprofInheritanceDump
+    outputs.upToDateWhen { false }
+
+    doFirst {
+        if (!hprofInheritanceDump.isFile() || hprofInheritanceDump.length() == 0) {
+            throw new GradleException("Inheritance HPROF is missing or empty: ${hprofInheritanceDump}")
+        }
+        hprofInheritanceOutput.reset()
+        commandLine "${System.getProperty('java.home')}/bin/java",
+                '-cp', "${buildDir}/RunJPF.jar${File.pathSeparator}${buildDir}/deps/*",
+                'gov.nasa.jpf.tool.RunJPF',
+                "+hprof.file=${hprofInheritanceDump.absolutePath}",
+                hprofInheritanceConfig.absolutePath
+        standardOutput = hprofInheritanceOutput
+    }
+    doLast {
+        String output = hprofInheritanceOutput.toString('UTF-8')
+        print output
+        def requiredDiagnostics = [
+                '[HPROF-JPF] import complete: objects=4 arrays=0 mappings=4 primitiveFields=6 references=4 arrayElements=0',
+                '[HPROF-JPF] HAHA inherited field order:',
+                '[HPROF-JPF] inherited fields verified:',
+                '[HPROF-JPF] inherited reference alias verified:',
+                '[HPROF-JPF] hidden fields verified:',
+                '[HPROF-JPF-MODEL] inheritance field layout verified',
+                '[HPROF-JPF] inheritance controlled GC verified: cycles=1',
+                '[HPROF-JPF-MODEL] post-GC inheritance field layout verified',
+                'no errors detected'
+        ]
+        requiredDiagnostics.each { diagnostic ->
+            if (!output.contains(diagnostic)) {
+                throw new GradleException(
+                        "Inheritance regression did not report required success diagnostic: ${diagnostic}")
+            }
+        }
+    }
+}
+
+tasks.register('hprofInheritanceTest') {
+    group = "verification"
+    description = "Verifies inherited and hidden HPROF field layout through modeled JPF and GC."
+
+    dependsOn runHprofInheritanceJpf
+    doLast {
+        println 'HPROF -> JPF inheritance field-layout regression passed'
+    }
+}
+
 tasks.register('hprofRegressionTest') {
     group = "verification"
     description = "Runs all durable HPROF -> JPF regressions."
@@ -630,4 +713,5 @@ tasks.register('hprofRegressionTest') {
     dependsOn hprofSmokeTest
     dependsOn hprofGraphIdentityTest
     dependsOn hprofObjectArrayTest
+    dependsOn hprofInheritanceTest
 }

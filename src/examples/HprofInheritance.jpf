@@ -1,0 +1,9 @@
+target=HprofInheritanceTarget
+
+listener=gov.nasa.jpf.listener.HprofHeapBootstrap
+hprof.file=${config_path}/hprof-inheritance.hprof
+hprof.classes=HprofInheritanceGraph$InheritanceGraph,HprofInheritanceGraph$Derived,HprofInheritanceGraph$HiddenDerived,HprofInheritanceGraph$Ref
+hprof.test_root.source_class=HprofInheritanceGraph$InheritanceGraph
+hprof.test_root.holder_class=HprofInheritanceGraph
+hprof.test_root.field=root
+hprof.test_support.class=gov.nasa.jpf.vm.hprof.HprofInheritanceValidator
