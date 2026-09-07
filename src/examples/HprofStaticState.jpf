@@ -1,0 +1,7 @@
+target=HprofStaticStateTarget
+
+listener=gov.nasa.jpf.listener.HprofHeapBootstrap
+hprof.file=${config_path}/hprof-static-state.hprof
+hprof.classes=HprofStaticStateGraph$Payload
+hprof.static_classes=HprofStaticStateGraph
+hprof.test_support.class=gov.nasa.jpf.vm.hprof.HprofStaticStateValidator

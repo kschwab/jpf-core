@@ -30,6 +30,12 @@ Primitive-array regression:
 ./gradlew hprofPrimitiveArrayTest --no-daemon
 ~~~
 
+Static-state regression:
+
+~~~bash
+./gradlew hprofStaticStateTest --no-daemon
+~~~
+
 All HPROF regressions:
 
 ~~~bash
@@ -75,9 +81,9 @@ HprofHeapBootstrap (configuration and VM lifecycle)
 
 `JpfHeapImporter` matches ordinary objects by the exact binary class names in `hprof.classes`. Pass A allocates every selected ordinary instance, then only directly referenced arrays needed by those selected instances. Pass B runs only after all identities exist. The importer contains no Foo/Bar field values or expected reference numbers.
 
-`ImportResult` exposes an unmodifiable copy of the HPROF-ID-to-JPF-reference map and counts for allocated objects, allocated arrays, primitive fields, references, and array elements.
+`ImportResult` exposes an unmodifiable copy of the HPROF-ID-to-JPF-reference map and counts for allocated objects, allocated arrays, instance primitive fields, instance references, array elements, static primitive fields, and static references.
 
-The listener validates `hprof.file` and `hprof.classes`, loads the snapshot, constructs `HprofView`, invokes the importer, and optionally invokes the smoke validator when `hprof.smoke_validate=true`. The smoke configuration separately enables `hprof.smoke_bind_root=true`.
+The listener validates `hprof.file` and `hprof.classes`, reads optional exact `hprof.static_classes`, loads the snapshot, constructs `HprofView`, invokes the importer, and optionally invokes the smoke validator when `hprof.smoke_validate=true`. The smoke configuration separately enables `hprof.smoke_bind_root=true`.
 
 Currently supported within selected classes includes all eight Java primitive scalar instance-field types, `Type.OBJECT` references whose non-null target has a Pass A mapping, directly referenced arrays of every primitive HAHA `Type` with exact boxed payload validation, and directly referenced one-dimensional `Type.OBJECT` arrays whose non-null elements already have Pass A mappings. Unsupported selected field types, unsupported directly referenced arrays, malformed values, and non-null references outside the selected identity graph cause a clear failure rather than an incomplete import.
 
@@ -122,7 +128,16 @@ Currently supported within selected classes includes all eight Java primitive sc
 | inheritance preservation through modeled execution | verified |
 | inheritance preservation through JPF GC | verified |
 
-| HPROF statics | unsupported |
+| primitive static fields | verified |
+| object-reference static fields | verified |
+| null static reference | verified |
+| aliased static references | verified |
+| static array reference | verified |
+| static field as JPF GC root | verified |
+| modeled access to reconstructed statics | verified |
+| static preservation through JPF GC | verified |
+| class with `<clinit>` | unsupported |
+| class-initialization state restoration | deferred |
 | HPROF GC roots | unsupported |
 | `String` | unsupported |
 | multiple class loaders | unsupported |
@@ -615,3 +630,59 @@ F.2 adds no recursive selection, statics, roots, strings, class loaders, or exec
 - Regressions: the new task passed twice; the six-fixture aggregate passed without weakening prior validators.
 - Current blocker: none for Pass F.2.
 - Recommended next milestone: deliberately choose the next state category; strong candidates are generic static-field reconstruction or String representation, while HPROF roots and execution state remain larger architectural steps.
+
+## Pass G.1 — Generic Static-Field Reconstruction
+
+G.1 introduces an independent `hprof.static_classes` selection boundary. `hprof.classes` still selects ordinary instances; `hprof.static_classes` selects exact HPROF `ClassObj` records whose declared static storage is restored. Existing callers use the original importer overload, which delegates with an empty static-class set and reports zero static counters.
+
+HAHA 2.0.4 exposes statics through `ClassObj.getStaticFieldValues()`. It returns a fresh `HashMap<Field,Object>` by reading the static count and the class record's own `mStaticFields` array; there is no superclass traversal, so entries are declared-only. `Field` contains name and `Type`, while the selected `ClassObj` supplies unambiguous declaring-class identity. Primitive values use the established boxed wrappers, non-null objects are `ClassInstance`, arrays are `ArrayInstance`, and null references are Java `null`.
+
+The supported JPF lifecycle is:
+
+~~~text
+ClassLoaderInfo.getSystemResolvedClassInfo(binaryName)
+  -> require ClassInfo.getClinit() == null
+  -> ClassInfo.registerClass(ti), if not already registered
+  -> ClassInfo.initializeClass(ti), requiring no pushed frame
+  -> require ClassInfo.isInitialized()
+  -> ClassInfo.getModifiableStaticElementInfo()
+  -> ClassInfo.getDeclaredStaticField(name)
+  -> typed ElementInfo FieldInfo setter
+~~~
+
+Registration creates and initializes the default `StaticElementInfo` storage. For a class without `<clinit>`, `initializeClass` marks it initialized synchronously and returns false. The importer writes snapshot values only after that sequence, so subsequent modeled `GETSTATIC` does not prepare or zero the storage again. A selected class with `ClassInfo.getClinit()!=null` fails explicitly because HPROF class-initialization state is not reconstructed. The fixture was verified with `javap`: `HprofStaticStateGraph` contains only its constructor and has no `<clinit>`.
+
+The fixture selects `HprofStaticStateGraph$Payload` as an ordinary instance class and `HprofStaticStateGraph` as a static class. Its HPROF statics contain all eight primitive values, `payload` and `payloadAlias` pointing to one `Payload(id=4242)`, `nullable=null`, and `numbers` pointing to `int[]{4,5,6}`. Pass A discovers the array directly from the selected static map; non-array object targets must still be explicitly selected through `hprof.classes`. Pass B restores instance fields and array payloads, then populates selected static storage after every identity exists.
+
+The new fixture has no `hprof.test_root.*` configuration. `HprofTestSupport` can now validate a rootless fixture and receives `MJIEnv.NULL`; `HprofStaticStateValidator` asserts that value, proving `HprofTestRootBinder` was not invoked.
+
+Observed diagnostics:
+
+~~~text
+[HPROF-JPF] import complete: objects=1 arrays=1 mappings=2 primitiveFields=1 references=0 arrayElements=3 staticPrimitiveFields=8 staticReferences=4
+[HPROF-JPF] static primitive values verified
+[HPROF-JPF] static alias verified: payload=ref 191 payloadAlias=ref 191
+[HPROF-JPF] static null verified: nullable=0
+[HPROF-JPF] static array verified: numbers=ref 192 {4,5,6}
+[HPROF-JPF] static fixture root binder absent: true
+[HPROF-JPF-MODEL] reconstructed static state verified
+[HPROF-JPF] static-state controlled GC verified: cycles=1
+[HPROF-JPF-MODEL] post-GC reconstructed static state verified
+no errors detected
+~~~
+
+`StaticElementInfo.markStaticRoot(Heap)` enumerates every declared static reference `FieldInfo`, reads its stored reference by storage offset, and calls `heap.markStaticRoot`. Consequently the imported static `payload` and `numbers` edges retained the original Pass A JPF references and their transitive state through deliberate GC. This proves HPROF static field to JPF static field to JPF GC-root semantics. It does not reconstruct other HPROF root-record categories such as JNI, thread-stack, monitor, or native roots.
+
+`ImportResult` retains the previous instance counters and adds `staticPrimitiveFields` and `staticReferences`. G.1 observed objects=1, arrays=1, mappings=2, primitiveFields=1, references=0, arrayElements=3, staticPrimitiveFields=8, and staticReferences=4. Null static reference assignments count as restored static references, matching the established instance-reference convention.
+
+Two consecutive `./gradlew hprofStaticStateTest --no-daemon` runs succeeded. The updated `./gradlew hprofRegressionTest --no-daemon` aggregate ran all seven fixtures successfully; every JPF execution ended with `no errors detected`.
+
+## Session Handoff — Pass G.1
+
+- Changed: optional exact static-class selection, static-array Pass A discovery, declared static primitive/reference population, and static-specific result counters.
+- Lifecycle: resolve, reject `<clinit>`, register, synchronously initialize the no-`<clinit>` class, then mutate declared `StaticElementInfo` slots by `FieldInfo`.
+- Proven: all primitive statics, object/array/null/alias statics, modeled direct access without test root binding, and JPF GC preservation through static root marking.
+- Limitation: classes with `<clinit>` are rejected; exact class-initialization state reconstruction remains deferred.
+- Regressions: the new task passed twice; the seven-fixture aggregate passed without weakening prior fixtures.
+- Current blocker: none for the supported no-`<clinit>` G.1 boundary.
+- Recommended next milestone: preserve the class-initialization limitation and investigate `String` representation as the next bounded heap-state category before general HPROF root records or execution state.

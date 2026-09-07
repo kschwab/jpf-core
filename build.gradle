@@ -880,6 +880,90 @@ tasks.register('hprofPrimitiveArrayTest') {
     }
 }
 
+// Generic HPROF static-field reconstruction regression.
+def hprofStaticStateDump = file("${hprofSmokeDir}/hprof-static-state.hprof")
+def hprofStaticStateConfig = file("${projectDir}/src/examples/HprofStaticState.jpf")
+def hprofStaticStateOutput = new ByteArrayOutputStream()
+
+tasks.register('generateHprofStaticStateDump', JavaExec) {
+    group = "verification"
+    description = "Generates the static-state HPROF fixture in a real HotSpot JVM."
+
+    dependsOn compileExamplesJava
+    classpath = files(sourceSets.examples.output)
+    mainClass = 'HprofStaticStateDumpGenerator'
+    args hprofStaticStateDump.absolutePath
+
+    outputs.file(hprofStaticStateDump)
+    outputs.upToDateWhen { false }
+
+    doFirst {
+        hprofSmokeDir.mkdirs()
+        delete hprofStaticStateDump
+        println "Generating static-state HPROF at ${hprofStaticStateDump}"
+    }
+    doLast {
+        if (!hprofStaticStateDump.isFile() || hprofStaticStateDump.length() == 0) {
+            throw new GradleException(
+                    "HotSpot dump generator did not produce a non-empty static-state HPROF: ${hprofStaticStateDump}")
+        }
+    }
+}
+
+tasks.register('runHprofStaticStateJpf', Exec) {
+    group = "verification"
+    description = "Runs JPF against the fresh static-state HPROF fixture."
+
+    dependsOn buildJars
+    dependsOn generateHprofStaticStateDump
+    outputs.upToDateWhen { false }
+
+    doFirst {
+        if (!hprofStaticStateDump.isFile() || hprofStaticStateDump.length() == 0) {
+            throw new GradleException("Static-state HPROF is missing or empty: ${hprofStaticStateDump}")
+        }
+        hprofStaticStateOutput.reset()
+        commandLine "${System.getProperty('java.home')}/bin/java",
+                '-cp', "${buildDir}/RunJPF.jar${File.pathSeparator}${buildDir}/deps/*",
+                'gov.nasa.jpf.tool.RunJPF',
+                "+hprof.file=${hprofStaticStateDump.absolutePath}",
+                hprofStaticStateConfig.absolutePath
+        standardOutput = hprofStaticStateOutput
+    }
+    doLast {
+        String output = hprofStaticStateOutput.toString('UTF-8')
+        print output
+        def requiredDiagnostics = [
+                '[HPROF-JPF] import complete: objects=1 arrays=1 mappings=2 primitiveFields=1 references=0 arrayElements=3 staticPrimitiveFields=8 staticReferences=4',
+                '[HPROF-JPF] static primitive values verified',
+                '[HPROF-JPF] static alias verified:',
+                '[HPROF-JPF] static null verified: nullable=0',
+                '[HPROF-JPF] static array verified:',
+                '[HPROF-JPF] static fixture root binder absent: true',
+                '[HPROF-JPF-MODEL] reconstructed static state verified',
+                '[HPROF-JPF] static-state controlled GC verified: cycles=1',
+                '[HPROF-JPF-MODEL] post-GC reconstructed static state verified',
+                'no errors detected'
+        ]
+        requiredDiagnostics.each { diagnostic ->
+            if (!output.contains(diagnostic)) {
+                throw new GradleException(
+                        "Static-state regression did not report required success diagnostic: ${diagnostic}")
+            }
+        }
+    }
+}
+
+tasks.register('hprofStaticStateTest') {
+    group = "verification"
+    description = "Verifies generic HPROF static-field reconstruction and GC rooting."
+
+    dependsOn runHprofStaticStateJpf
+    doLast {
+        println 'HPROF -> JPF static-state regression passed'
+    }
+}
+
 tasks.register('hprofRegressionTest') {
     group = "verification"
     description = "Runs all durable HPROF -> JPF regressions."
@@ -890,4 +974,5 @@ tasks.register('hprofRegressionTest') {
     dependsOn hprofInheritanceTest
     dependsOn hprofPrimitiveScalarTest
     dependsOn hprofPrimitiveArrayTest
+    dependsOn hprofStaticStateTest
 }

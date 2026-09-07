@@ -5,6 +5,7 @@ import gov.nasa.jpf.Config;
 import gov.nasa.jpf.JPF;
 import gov.nasa.jpf.JPFConfigException;
 import gov.nasa.jpf.ListenerAdapter;
+import gov.nasa.jpf.vm.MJIEnv;
 import gov.nasa.jpf.vm.VM;
 import gov.nasa.jpf.vm.hprof.HprofGraphIdentityValidator;
 import gov.nasa.jpf.vm.hprof.HprofPassASmokeGcVerifier;
@@ -26,6 +27,7 @@ import java.util.Set;
 public class HprofHeapBootstrap extends ListenerAdapter {
   private final File hprof;
   private final Set<String> selectedClasses;
+  private final Set<String> selectedStaticClasses;
   private final boolean smokeBindRoot;
   private final boolean smokeValidate;
   private final boolean smokeGcValidate;
@@ -52,6 +54,9 @@ public class HprofHeapBootstrap extends ListenerAdapter {
       throw new JPFConfigException("Missing required property: hprof.classes");
     }
     selectedClasses = Collections.unmodifiableSet(new HashSet<>(Arrays.asList(classNames)));
+    String[] staticClassNames = conf.getCompactTrimmedStringArray("hprof.static_classes");
+    selectedStaticClasses = Collections.unmodifiableSet(
+        new HashSet<>(Arrays.asList(staticClassNames)));
     smokeBindRoot = conf.getBoolean("hprof.smoke_bind_root", false);
     smokeValidate = conf.getBoolean("hprof.smoke_validate", false);
     smokeGcValidate = conf.getBoolean("hprof.smoke_gc_validate", false);
@@ -72,9 +77,6 @@ public class HprofHeapBootstrap extends ListenerAdapter {
     if (graphIdentityValidate && testRootParts != 3) {
       throw new JPFConfigException("hprof.graph_identity_validate requires hprof.test_root configuration");
     }
-    if (testSupport != null && testRootParts != 3) {
-      throw new JPFConfigException("hprof.test_support.class requires hprof.test_root configuration");
-    }
   }
 
   public HprofHeapBootstrap(Config conf, JPF jpf) {
@@ -87,22 +89,24 @@ public class HprofHeapBootstrap extends ListenerAdapter {
       Snapshot snapshot = HprofSnapshotLoader.load(hprof);
       HprofView view = HprofView.from(snapshot);
       JpfHeapImporter.ImportResult result =
-          new JpfHeapImporter().importHeap(vm, view, selectedClasses);
+          new JpfHeapImporter().importHeap(vm, view, selectedClasses, selectedStaticClasses);
       if (smokeBindRoot) {
         int fooRef = HprofPassASmokeRootBinder.bind(vm, view, result);
         if (smokeGcValidate) {
           smokeGcVerifier = HprofPassASmokeGcVerifier.create(vm, result, fooRef);
         }
       }
+      int testRootRef = MJIEnv.NULL;
       if (testRootSourceClass != null) {
-        int graphRef = HprofTestRootBinder.bind(vm, view, result, testRootSourceClass,
+        testRootRef = HprofTestRootBinder.bind(vm, view, result, testRootSourceClass,
             testRootHolderClass, testRootField);
         if (graphIdentityValidate) {
-          graphIdentityValidator = HprofGraphIdentityValidator.create(vm, view, result, graphRef);
+          graphIdentityValidator = HprofGraphIdentityValidator.create(
+              vm, view, result, testRootRef);
         }
-        if (testSupport != null) {
-          testSupport.initialize(vm, view, result, graphRef);
-        }
+      }
+      if (testSupport != null) {
+        testSupport.initialize(vm, view, result, testRootRef);
       }
       if (smokeValidate) {
         HprofPassASmokeValidator.validate(vm, view, result);

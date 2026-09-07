@@ -11,6 +11,7 @@ import gov.nasa.jpf.vm.ClassLoaderInfo;
 import gov.nasa.jpf.vm.ElementInfo;
 import gov.nasa.jpf.vm.FieldInfo;
 import gov.nasa.jpf.vm.MJIEnv;
+import gov.nasa.jpf.vm.StaticElementInfo;
 import gov.nasa.jpf.vm.ThreadInfo;
 import gov.nasa.jpf.vm.VM;
 
@@ -26,13 +27,21 @@ import java.util.Set;
 /** Two-pass importer for the deliberately narrow set of currently proven HPROF state. */
 public final class JpfHeapImporter {
   public ImportResult importHeap(VM vm, HprofView view, Set<String> selectedClassNames) {
+    return importHeap(vm, view, selectedClassNames, Collections.emptySet());
+  }
+
+  public ImportResult importHeap(VM vm, HprofView view, Set<String> selectedClassNames,
+      Set<String> selectedStaticClassNames) {
     if (selectedClassNames == null || selectedClassNames.isEmpty()) {
       throw new IllegalArgumentException("selected HPROF classes must not be empty");
+    }
+    if (selectedStaticClassNames == null) {
+      throw new IllegalArgumentException("selected HPROF static classes must not be null");
     }
     ThreadInfo ti = vm.getCurrentThread();
     require(ti != null, "no current JPF thread during heap import");
 
-    ImportState state = new ImportState(vm, view, selectedClassNames, ti);
+    ImportState state = new ImportState(vm, view, selectedClassNames, selectedStaticClassNames, ti);
     state.allocateObjectsAndArrays();       // Pass A: establish every identity.
     state.populateObjectsAndArrays();       // Pass B: translate state through that identity map.
     ImportResult result = state.toResult();
@@ -44,8 +53,10 @@ public final class JpfHeapImporter {
     private final gov.nasa.jpf.vm.Heap jpfHeap;
     private final HprofView view;
     private final Set<String> selectedClassNames;
+    private final Set<String> selectedStaticClassNames;
     private final ThreadInfo ti;
     private final List<ClassInstance> selectedInstances = new ArrayList<>();
+    private final List<ClassObj> selectedStaticClasses = new ArrayList<>();
     private final Map<Long, ArrayInstance> selectedArrays = new LinkedHashMap<>();
     private final Map<Long, Integer> refMap = new LinkedHashMap<>();
     private int objects;
@@ -53,11 +64,15 @@ public final class JpfHeapImporter {
     private int primitiveFields;
     private int references;
     private int arrayElements;
+    private int staticPrimitiveFields;
+    private int staticReferences;
 
-    ImportState(VM vm, HprofView view, Set<String> selectedClassNames, ThreadInfo ti) {
+    ImportState(VM vm, HprofView view, Set<String> selectedClassNames,
+        Set<String> selectedStaticClassNames, ThreadInfo ti) {
       this.jpfHeap = vm.getHeap();
       this.view = view;
       this.selectedClassNames = selectedClassNames;
+      this.selectedStaticClassNames = selectedStaticClassNames;
       this.ti = ti;
     }
 
@@ -73,6 +88,7 @@ public final class JpfHeapImporter {
             instance.getId(), ei.getObjectRef(), className);
       }
 
+      collectSelectedStaticClasses();
       collectDirectlyReferencedArrays();
       for (ArrayInstance array : selectedArrays.values()) {
         String elementType = jpfArrayElementType(array);
@@ -170,6 +186,63 @@ public final class JpfHeapImporter {
             System.out.printf("[HPROF-JPF] array-element HPROF=0x%x JPF=%d type=%s "
                     + "index=%d value=%s%n",
                 array.getId(), jpfRef, array.getArrayType(), i, value);
+          }
+        }
+      }
+
+      populateStaticFields();
+    }
+
+    private void populateStaticFields() {
+      for (ClassObj sourceClass : selectedStaticClasses) {
+        String className = sourceClass.getClassName();
+        ClassInfo ci = ClassLoaderInfo.getSystemResolvedClassInfo(className);
+        require(ci.getClinit() == null,
+            "HPROF static reconstruction for class " + className
+                + " with <clinit> is not supported because initialization state is not reconstructed");
+        if (!ci.isRegistered()) {
+          ci.registerClass(ti);
+        }
+        boolean pushedClinit = ci.initializeClass(ti);
+        require(!pushedClinit,
+            "initializing static class " + className + " unexpectedly required <clinit>");
+        require(ci.isInitialized(), "static class was not initialized: " + className);
+        StaticElementInfo statics = ci.getModifiableStaticElementInfo();
+        require(statics != null, "no modifiable JPF static storage for " + className);
+
+        Map<Field, Object> sourceValues = sourceClass.getStaticFieldValues();
+        List<Field> fields = new ArrayList<>(sourceValues.keySet());
+        fields.sort(Comparator.comparing(Field::getName));
+        for (Field sourceField : fields) {
+          String fieldName = sourceField.getName();
+          String description = "static field " + className + "." + fieldName;
+          FieldInfo jpfField = ci.getDeclaredStaticField(fieldName);
+          require(jpfField != null, description + " has no matching JPF FieldInfo");
+          Object value = sourceValues.get(sourceField);
+          if (sourceField.getType() == Type.OBJECT) {
+            require(jpfField.isReference(), description + " is not a JPF reference field");
+            int targetRef = MJIEnv.NULL;
+            long targetId = 0;
+            String targetClass = "null";
+            if (value != null) {
+              require(value instanceof Instance, description + " is not represented by an Instance");
+              Instance target = (Instance) value;
+              targetId = target.getId();
+              targetRef = mappedRef(targetId, description + " target");
+              targetClass = target instanceof ArrayInstance
+                  ? jpfHeap.get(targetRef).getClassInfo().getName()
+                  : target.getClassObj().getClassName();
+            }
+            statics.setReferenceField(jpfField, targetRef);
+            staticReferences++;
+            System.out.printf("[HPROF-JPF] static-reference class=%s field=%s "
+                    + "targetHPROF=0x%x targetJPF=%d targetClass=%s%n",
+                className, fieldName, targetId, targetRef, targetClass);
+          } else {
+            setPrimitiveField(statics, jpfField, sourceField.getType(), value, description);
+            staticPrimitiveFields++;
+            System.out.printf("[HPROF-JPF] static-field class=%s field=%s type=%s value=%s%n",
+                className, fieldName, sourceField.getType(), value);
           }
         }
       }
@@ -305,12 +378,41 @@ public final class JpfHeapImporter {
       }
     }
 
+    private void collectSelectedStaticClasses() {
+      Map<String, Integer> counts = new HashMap<>();
+      for (ClassObj sourceClass : view.classes.values()) {
+        String className = sourceClass.getClassName();
+        if (selectedStaticClassNames.contains(className)) {
+          selectedStaticClasses.add(sourceClass);
+          counts.put(className, counts.getOrDefault(className, 0) + 1);
+        }
+      }
+      selectedStaticClasses.sort(Comparator.comparing(ClassObj::getClassName));
+      for (String className : selectedStaticClassNames) {
+        require(counts.getOrDefault(className, 0) == 1,
+            "expected exactly one HPROF ClassObj for selected static class " + className
+                + ", found " + counts.getOrDefault(className, 0));
+      }
+    }
+
     private void collectDirectlyReferencedArrays() {
       for (ClassInstance instance : selectedInstances) {
         for (ClassInstance.FieldValue fieldValue : instance.getValues()) {
           if (fieldValue.getField().getType() == Type.OBJECT
               && fieldValue.getValue() instanceof ArrayInstance) {
             ArrayInstance array = (ArrayInstance) fieldValue.getValue();
+            if (array.getArrayType() != Type.OBJECT) {
+              jpfPrimitiveArraySignature(array.getArrayType());
+            }
+            selectedArrays.put(array.getId(), array);
+          }
+        }
+      }
+      for (ClassObj sourceClass : selectedStaticClasses) {
+        for (Map.Entry<Field, Object> entry : sourceClass.getStaticFieldValues().entrySet()) {
+          if (entry.getKey().getType() == Type.OBJECT
+              && entry.getValue() instanceof ArrayInstance) {
+            ArrayInstance array = (ArrayInstance) entry.getValue();
             if (array.getArrayType() != Type.OBJECT) {
               jpfPrimitiveArraySignature(array.getArrayType());
             }
@@ -368,7 +470,8 @@ public final class JpfHeapImporter {
     }
 
     private ImportResult toResult() {
-      return new ImportResult(refMap, objects, arrays, primitiveFields, references, arrayElements);
+      return new ImportResult(refMap, objects, arrays, primitiveFields, references, arrayElements,
+          staticPrimitiveFields, staticReferences);
     }
   }
 
@@ -391,15 +494,20 @@ public final class JpfHeapImporter {
     private final int primitiveFields;
     private final int references;
     private final int arrayElements;
+    private final int staticPrimitiveFields;
+    private final int staticReferences;
 
     private ImportResult(Map<Long, Integer> refMap, int allocatedObjects, int allocatedArrays,
-        int primitiveFields, int references, int arrayElements) {
+        int primitiveFields, int references, int arrayElements, int staticPrimitiveFields,
+        int staticReferences) {
       this.refMap = Collections.unmodifiableMap(new LinkedHashMap<>(refMap));
       this.allocatedObjects = allocatedObjects;
       this.allocatedArrays = allocatedArrays;
       this.primitiveFields = primitiveFields;
       this.references = references;
       this.arrayElements = arrayElements;
+      this.staticPrimitiveFields = staticPrimitiveFields;
+      this.staticReferences = staticReferences;
     }
 
     public Map<Long, Integer> getRefMap() { return refMap; }
@@ -408,13 +516,17 @@ public final class JpfHeapImporter {
     public int getPrimitiveFields() { return primitiveFields; }
     public int getReferences() { return references; }
     public int getArrayElements() { return arrayElements; }
+    public int getStaticPrimitiveFields() { return staticPrimitiveFields; }
+    public int getStaticReferences() { return staticReferences; }
   }
 
   private static void printSummary(ImportResult result) {
     System.out.printf("[HPROF-JPF] import complete: objects=%d arrays=%d mappings=%d "
-            + "primitiveFields=%d references=%d arrayElements=%d%n",
+            + "primitiveFields=%d references=%d arrayElements=%d "
+            + "staticPrimitiveFields=%d staticReferences=%d%n",
         result.getAllocatedObjects(), result.getAllocatedArrays(), result.getRefMap().size(),
-        result.getPrimitiveFields(), result.getReferences(), result.getArrayElements());
+        result.getPrimitiveFields(), result.getReferences(), result.getArrayElements(),
+        result.getStaticPrimitiveFields(), result.getStaticReferences());
   }
 
   private static String fieldDescription(ClassInstance instance, String fieldName) {
