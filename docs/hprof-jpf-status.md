@@ -36,6 +36,12 @@ Static-state regression:
 ./gradlew hprofStaticStateTest --no-daemon
 ~~~
 
+Class-initialization-state characterization:
+
+~~~bash
+./gradlew hprofClassInitTest --no-daemon
+~~~
+
 All HPROF regressions:
 
 ~~~bash
@@ -136,6 +142,15 @@ Currently supported within selected classes includes all eight Java primitive sc
 | static field as JPF GC root | verified |
 | modeled access to reconstructed statics | verified |
 | static preservation through JPF GC | verified |
+| static field values | verified |
+| no-`<clinit>` static classes | verified |
+| class contains `<clinit>` | unsupported for import |
+| loaded-but-uninitialized class | characterized; reconstruction blocked without metadata |
+| initialized class with `<clinit>` | characterized; reconstruction blocked without metadata |
+| class-init state observable in HPROF | no explicit standard HPROF status |
+| JPF initialized-state restoration | supported API if state is supplied; end-to-end deferred |
+| JPF uninitialized-state preservation | supported API if state is supplied; end-to-end deferred |
+| exact `<clinit>` continuation semantics | blocked on supplemental capture metadata |
 | class with `<clinit>` | unsupported |
 | class-initialization state restoration | deferred |
 | HPROF GC roots | unsupported |
@@ -686,3 +701,64 @@ Two consecutive `./gradlew hprofStaticStateTest --no-daemon` runs succeeded. The
 - Regressions: the new task passed twice; the seven-fixture aggregate passed without weakening prior fixtures.
 - Current blocker: none for the supported no-`<clinit>` G.1 boundary.
 - Recommended next milestone: preserve the class-initialization limitation and investigate `String` representation as the next bounded heap-state category before general HPROF root records or execution state.
+
+## Pass G.2 — Class Initialization State
+
+Pass G.2 is a characterization result: **standard HPROF does not explicitly encode the lifecycle state needed to distinguish a class that is registered but has not executed `<clinit>` from one whose `<clinit>` completed.** The result is CASE B: JPF can represent both states if the correct state is supplied, but HPROF alone does not supply it.
+
+### JPF state model in this checkout
+
+JPF separates class resolution, registration, and initialization:
+
+- Resolution creates/caches `ClassInfo`; it does not make the class visible to modeled code.
+- `ClassInfo.registerClass(ThreadInfo)` creates `StaticElementInfo`, its modeled `java.lang.Class` object, and default/constant static storage. The new `StaticElementInfo.status` is `ClassInfo.UNINITIALIZED` (`-1`). Registration therefore cleanly represents loaded/registered but not initialized.
+- Initialization in progress is represented by any non-negative status: the modeled thread id executing `<clinit>`. `ClassInfo.setInitializing(ThreadInfo)` installs that status.
+- Successful completion is `ClassInfo.INITIALIZED` (`-2`). Normal/return paths (`RETURN`, `NATIVERETURN`, or `FINISHCLINIT` for a class without bytecode `<clinit>`) call the public `ClassInfo.setInitialized()` method.
+- This checkout does not define a separate `INITIALIZATION_FAILED` status in `StaticElementInfo`; exceptional `<clinit>` behavior is handled through exception/unwind machinery rather than another persisted status constant. This is an additional lifecycle-fidelity question beyond the two-state G.2 fixture.
+
+`StaticElementInfo`, not `ClassInfo`, stores the backtrackable status. `ClassInfo.needsInitialization(ThreadInfo)` and `initializeClass(ThreadInfo)` inspect it. Active-use bytecodes including `GETSTATIC`, `PUTSTATIC`, `INVOKESTATIC`, and `NEW` call class initialization before completing the original instruction. An already initialized class does not push `<clinit>` again; a registered `UNINITIALIZED` class with `<clinit>` does.
+
+The supported JPF-side representation mechanisms are therefore:
+
+- registered/uninitialized: call `registerClass(ti)` and leave the resulting status unchanged;
+- restored initialized without executing modeled `<clinit>`: register the class, restore its static fields, and call the public `ClassInfo.setInitialized()` lifecycle API.
+
+The second sequence is mechanically available and does not require reflection or private numeric status mutation. It is not used by the importer because the source checkpoint does not say which state is correct.
+
+### Standard HPROF and HAHA metadata
+
+HAHA 2.0.4's `HprofParser.loadClassDump()` reads the standard `CLASS_DUMP` layout: class object id, stack-trace serial, superclass id, class-loader id, signers id, protection-domain id, two reserved ids, instance size, constant-pool entries, static field name/type/value entries, and instance field name/type descriptors. It constructs `ClassObj` with class name, superclass, loader, size, fields, static values, and stack trace. Neither the record parser nor `ClassObj` exposes an initialized, initializing, failed, or `<clinit>`-completed field.
+
+HAHA exposes GC root categories such as `RootType.SYSTEM_CLASS`, but a sticky/system-class root states reachability, not initialization lifecycle. The G.2 captures did not expose a subject-specific `SYSTEM_CLASS` root through HAHA in either state, and root presence must not be used as an initialization oracle.
+
+The controlled HotSpot fixture uses `HprofClassInitState$InitSubject`, whose classfile has a real `<clinit>`:
+
+~~~java
+static int value;
+static {
+  value = 0;
+  InitEffects.effectCount++;
+}
+~~~
+
+Two independent real JVM processes capture:
+
+1. `Class.forName(name, false, loader)`: `effectCount == 0`, proving the class is loaded but not initialized.
+2. `Class.forName(name, true, loader)`: `effectCount == 1`, proving `<clinit>` executed exactly once.
+
+In both HPROFs, the declared Java static `InitSubject.value` is `Type.INT`, boxed as `Integer`, and equals `0`. Thus declared static values are an ambiguous and invalid initialization-state heuristic.
+
+On the current HotSpot, the uninitialized `CLASS_DUMP` additionally contains an implementation-injected `Type.OBJECT` pseudo-static named `<init_lock>` whose value HAHA represents as `ArrayInstance`; it is absent after initialization and absent from the classfile (`javap` shows only `value`). This is useful characterization evidence, but it is not an explicit standard HPROF status field or a portable lifecycle contract. The importer deliberately does not infer state from it.
+
+### Regression and implication
+
+`./gradlew hprofClassInitTest --no-daemon` creates fresh build-owned dumps in separate HotSpot processes:
+
+- `build/hprof-smoke/hprof-class-init-uninitialized.hprof`
+- `build/hprof-smoke/hprof-class-init-initialized.hprof`
+
+`HprofClassInitCharacterizer` parses both with the production HAHA loader, verifies the external side-effect evidence printed by each generator, confirms the declared static ambiguity, records the HotSpot-specific `<init_lock>` observation, and reports `CASE_B`. The task is part of `hprofRegressionTest`.
+
+No supplemental metadata prototype was added. Supplying and validating a capture-side class-state manifest is a separate design milestone; adding one here would prematurely choose a checkpoint format. No modeled continuation assertion is claimed in G.2 because choosing initialized versus uninitialized without that metadata would itself be the unsound operation under investigation.
+
+**Research implication:** exact JVM checkpoint continuation cannot infer class initialization state from standard HPROF static contents. A complete capture must provide supplemental runtime metadata for at least loaded/registered, initializing (including ownership), initialized, and failed initialization semantics. Until then, generic static import continues to reject selected classes with `<clinit>`.

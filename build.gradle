@@ -964,6 +964,75 @@ tasks.register('hprofStaticStateTest') {
     }
 }
 
+// Standard HPROF class-initialization-state characterization.
+def hprofClassInitUninitializedDump = file("${hprofSmokeDir}/hprof-class-init-uninitialized.hprof")
+def hprofClassInitInitializedDump = file("${hprofSmokeDir}/hprof-class-init-initialized.hprof")
+def hprofClassInitOutput = new ByteArrayOutputStream()
+
+tasks.register('generateHprofClassInitUninitializedDump', JavaExec) {
+    group = "verification"
+    description = "Captures a class loaded without initialization in a real HotSpot JVM."
+    dependsOn compileExamplesJava
+    classpath = files(sourceSets.examples.output)
+    mainClass = 'HprofClassInitDumpGenerator'
+    args 'uninitialized', hprofClassInitUninitializedDump.absolutePath
+    outputs.file(hprofClassInitUninitializedDump)
+    outputs.upToDateWhen { false }
+    doFirst {
+        hprofSmokeDir.mkdirs()
+        delete hprofClassInitUninitializedDump
+    }
+}
+
+tasks.register('generateHprofClassInitInitializedDump', JavaExec) {
+    group = "verification"
+    description = "Captures the same class after initialization in a separate real HotSpot JVM."
+    dependsOn compileExamplesJava
+    classpath = files(sourceSets.examples.output)
+    mainClass = 'HprofClassInitDumpGenerator'
+    args 'initialized', hprofClassInitInitializedDump.absolutePath
+    outputs.file(hprofClassInitInitializedDump)
+    outputs.upToDateWhen { false }
+    doFirst {
+        hprofSmokeDir.mkdirs()
+        delete hprofClassInitInitializedDump
+    }
+}
+
+tasks.register('hprofClassInitTest', JavaExec) {
+    group = "verification"
+    description = "Characterizes the class-initialization-state information missing from standard HPROF."
+    dependsOn compileJava
+    dependsOn copyRuntimeLibs
+    dependsOn generateHprofClassInitUninitializedDump
+    dependsOn generateHprofClassInitInitializedDump
+    classpath = files(sourceSets.main.output, configurations.runtimeClasspath)
+    mainClass = 'gov.nasa.jpf.vm.hprof.HprofClassInitCharacterizer'
+    args hprofClassInitUninitializedDump.absolutePath, hprofClassInitInitializedDump.absolutePath
+    standardOutput = hprofClassInitOutput
+    outputs.upToDateWhen { false }
+    doFirst {
+        [hprofClassInitUninitializedDump, hprofClassInitInitializedDump].each { dump ->
+            if (!dump.isFile() || dump.length() == 0) {
+                throw new GradleException("Class-init HPROF is missing or empty: ${dump}")
+            }
+        }
+        hprofClassInitOutput.reset()
+    }
+    doLast {
+        String output = hprofClassInitOutput.toString('UTF-8')
+        print output
+        ['[HPROF-JPF] class-init ambiguity verified:',
+         '[HPROF-JPF] declared Java static value is ambiguous',
+         '[HPROF-JPF] class-init characterization result: CASE_B'].each { diagnostic ->
+            if (!output.contains(diagnostic)) {
+                throw new GradleException("Class-init characterization missing diagnostic: ${diagnostic}")
+            }
+        }
+        println 'HPROF class-initialization-state characterization passed'
+    }
+}
+
 tasks.register('hprofRegressionTest') {
     group = "verification"
     description = "Runs all durable HPROF -> JPF regressions."
@@ -975,4 +1044,5 @@ tasks.register('hprofRegressionTest') {
     dependsOn hprofPrimitiveScalarTest
     dependsOn hprofPrimitiveArrayTest
     dependsOn hprofStaticStateTest
+    dependsOn hprofClassInitTest
 }
