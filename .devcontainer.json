@@ -1,0 +1,20 @@
+{
+    "image": "ghcr.io/kschwab/jpf-core/phd-computing-artifact:0.5",
+    "workspaceMount": "source=${localWorkspaceFolder},target=/jpf-core,type=bind,relabel=shared",
+    "workspaceFolder": "/jpf-core",
+    "containerEnv": {
+        "GRADLE_USER_HOME": "/jpf-core/provision/gradle"
+    },
+    "initializeCommand": "python ${localWorkspaceFolder}/provision/initialize_command.py",
+    "customizations": {
+        "podrun": {
+            "login": true,
+            "session": true,
+            "autoAttach": true,
+            "shell": "bash",
+            "nfsRemediate": "mv",
+            "name": "phd-computing-artifact-0.5",
+            "promptBanner": "phd-computing-artifact-0.5"
+        }
+    }
+}

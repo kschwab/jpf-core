@@ -246,7 +246,8 @@
                 "${workspaceFolder}${pathSeparator}build${pathSeparator}annotations",
                 "${workspaceFolder}${pathSeparator}build${pathSeparator}classes",
                 "${workspaceFolder}${pathSeparator}build${pathSeparator}examples",
-                "${workspaceFolder}${pathSeparator}build${pathSeparator}peers"
+                "${workspaceFolder}${pathSeparator}build${pathSeparator}peers",
+                "${workspaceFolder}${pathSeparator}build${pathSeparator}deps${pathSeparator}*"
             ],
             "args": "+classpath=. ${command:SpecifyProgramArgs}",
             "vmArgs": "-Xmx1G -ea"
@@ -264,6 +265,7 @@
                 "${workspaceFolder}${pathSeparator}build${pathSeparator}classes",
                 "${workspaceFolder}${pathSeparator}build${pathSeparator}examples",
                 "${workspaceFolder}${pathSeparator}build${pathSeparator}peers"
+                "${workspaceFolder}${pathSeparator}build${pathSeparator}deps${pathSeparator}*"
             ],
             "args": "+classpath=. ${command:SpecifyProgramArgs}",
             "vmArgs": "-Xmx1G -ea",

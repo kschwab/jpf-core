@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION=0.4
+VERSION=0.5
 CREATED=$(date --rfc-3339 seconds)
 PROVISION_DIR=$(dirname "$0")
 
@@ -11,7 +11,7 @@ if ! pushd "${PROVISION_DIR}" > /dev/null; then
 fi
 
 # Run the docker build command
-docker build -t ghcr.io/kschwab/jpf-core/phd-computing-artifact:${VERSION} . \
+docker build --platform linux/amd64 -t ghcr.io/kschwab/jpf-core/phd-computing-artifact:${VERSION} . \
     --label org.opencontainers.image.source=https://github.com/kschwab/jpf-core \
     --label org.opencontainers.image.description="Kyle Schwab PhD Computing Artifact" \
     --label "org.opencontainers.image.version=${VERSION}" \
