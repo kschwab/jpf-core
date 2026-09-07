@@ -1,0 +1,9 @@
+target=HprofPassASmokeTarget
+
+listener=gov.nasa.jpf.listener.HprofHeapBootstrap
+hprof.file=${config_path}/hprof-pass-a.hprof
+hprof.classes=HprofPassASmokeGraph$Foo,HprofPassASmokeGraph$Bar
+hprof.smoke_bind_root=true
+hprof.smoke_validate=true
+
+hprof.smoke_gc_validate=true

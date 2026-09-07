@@ -29,7 +29,7 @@ repositories {
 dependencies {
     testImplementation 'org.ow2.asm:asm:9.5'
     testImplementation('junit:junit:4.13.1')
-    implementation fileTree(dir: '/opt/mat/plugins', include: '**/*.jar')
+    implementation "com.squareup.haha:haha:2.0.4"   // perflib-based HPROF parser
 }
 
 configurations {
@@ -81,6 +81,13 @@ tasks.named('compileTestJava') {
 tasks.named('jar') {
     dependsOn(copyLibs)
     dependsOn(copyResources)
+}
+tasks.register('copyRuntimeLibs', Copy) {
+  from configurations.runtimeClasspath
+  into "$buildDir/deps"
+  // incremental:
+  inputs.files configurations.runtimeClasspath
+  outputs.dir "$buildDir/deps"
 }
 
 
@@ -263,6 +270,7 @@ tasks.register('buildJars') {
     description = "Generates all core JPF jar files."
 
     dependsOn(copyLibs)
+    dependsOn copyRuntimeLibs
     dependsOn createClassloaderSpecificTestsJar
     dependsOn createAnnotationsJar
     dependsOn createJpfClassesJar
@@ -366,3 +374,175 @@ tasks.register('runPolDet', Exec) {
 }
 
 defaultTasks "buildJars"
+
+// Complete two-process HotSpot -> HPROF -> JPF regression.
+def hprofSmokeDir = file("${buildDir}/hprof-smoke")
+def hprofSmokeDump = file("${hprofSmokeDir}/hprof-pass-a.hprof")
+def hprofSmokeConfig = file("${projectDir}/src/examples/HprofPassASmoke.jpf")
+def hprofSmokeOutput = new ByteArrayOutputStream()
+
+tasks.register('generateHprofSmokeDump', JavaExec) {
+    group = "verification"
+    description = "Generates a fresh build-owned HPROF fixture in a real HotSpot JVM."
+
+    dependsOn compileExamplesJava
+    classpath = files(sourceSets.examples.output)
+    mainClass = 'HprofPassADumpGenerator'
+    args hprofSmokeDump.absolutePath
+
+    outputs.file(hprofSmokeDump)
+    outputs.upToDateWhen { false }
+
+    doFirst {
+        hprofSmokeDir.mkdirs()
+        delete hprofSmokeDump
+        println "Generating smoke HPROF at ${hprofSmokeDump}"
+    }
+    doLast {
+        if (!hprofSmokeDump.isFile() || hprofSmokeDump.length() == 0) {
+            throw new GradleException("HotSpot dump generator did not produce a non-empty HPROF: ${hprofSmokeDump}")
+        }
+    }
+}
+
+tasks.register('runHprofSmokeJpf', Exec) {
+    group = "verification"
+    description = "Runs JPF against the fresh build-owned HPROF fixture."
+
+    dependsOn buildJars
+    dependsOn generateHprofSmokeDump
+    outputs.upToDateWhen { false }
+
+    doFirst {
+        if (!hprofSmokeDump.isFile() || hprofSmokeDump.length() == 0) {
+            throw new GradleException("Smoke HPROF is missing or empty: ${hprofSmokeDump}")
+        }
+        hprofSmokeOutput.reset()
+        commandLine "${System.getProperty('java.home')}/bin/java",
+                '-cp', "${buildDir}/RunJPF.jar${File.pathSeparator}${buildDir}/deps/*",
+                'gov.nasa.jpf.tool.RunJPF',
+                "+hprof.file=${hprofSmokeDump.absolutePath}",
+                hprofSmokeConfig.absolutePath
+        standardOutput = hprofSmokeOutput
+    }
+    doLast {
+        String output = hprofSmokeOutput.toString('UTF-8')
+        print output
+        def requiredDiagnostics = [
+                '[HPROF-JPF] import complete: objects=2 arrays=1 mappings=3 primitiveFields=2 references=2 arrayElements=3',
+                '[HPROF-JPF] smoke root bound:',
+                '[HPROF-JPF] smoke graph verified:',
+                '[HPROF-JPF-MODEL] pre-GC graph verified',
+                '[HPROF-JPF] controlled GC verified: cycles=1',
+                '[HPROF-JPF-MODEL] post-GC reconstructed graph verified',
+                'no errors detected'
+        ]
+        requiredDiagnostics.each { diagnostic ->
+            if (!output.contains(diagnostic)) {
+                throw new GradleException("JPF smoke regression did not report required success diagnostic: ${diagnostic}")
+            }
+        }
+    }
+}
+
+tasks.register('hprofSmokeTest') {
+    group = "verification"
+    description = "Runs the complete HotSpot -> HPROF -> JPF reconstruction and GC regression."
+
+    dependsOn runHprofSmokeJpf
+    doLast {
+        println 'HPROF -> JPF smoke regression passed'
+    }
+}
+
+// Separate topology regression for null references, aliasing, and cyclic graphs.
+def hprofGraphIdentityDump = file("${hprofSmokeDir}/hprof-graph-identity.hprof")
+def hprofGraphIdentityConfig = file("${projectDir}/src/examples/HprofGraphIdentity.jpf")
+def hprofGraphIdentityOutput = new ByteArrayOutputStream()
+
+tasks.register('generateHprofGraphIdentityDump', JavaExec) {
+    group = "verification"
+    description = "Generates the graph-identity HPROF fixture in a real HotSpot JVM."
+
+    dependsOn compileExamplesJava
+    classpath = files(sourceSets.examples.output)
+    mainClass = 'HprofGraphIdentityDumpGenerator'
+    args hprofGraphIdentityDump.absolutePath
+
+    outputs.file(hprofGraphIdentityDump)
+    outputs.upToDateWhen { false }
+
+    doFirst {
+        hprofSmokeDir.mkdirs()
+        delete hprofGraphIdentityDump
+        println "Generating graph-identity HPROF at ${hprofGraphIdentityDump}"
+    }
+    doLast {
+        if (!hprofGraphIdentityDump.isFile() || hprofGraphIdentityDump.length() == 0) {
+            throw new GradleException(
+                    "HotSpot dump generator did not produce a non-empty graph-identity HPROF: ${hprofGraphIdentityDump}")
+        }
+    }
+}
+
+tasks.register('runHprofGraphIdentityJpf', Exec) {
+    group = "verification"
+    description = "Runs JPF against the fresh graph-identity HPROF fixture."
+
+    dependsOn buildJars
+    dependsOn generateHprofGraphIdentityDump
+    outputs.upToDateWhen { false }
+
+    doFirst {
+        if (!hprofGraphIdentityDump.isFile() || hprofGraphIdentityDump.length() == 0) {
+            throw new GradleException("Graph-identity HPROF is missing or empty: ${hprofGraphIdentityDump}")
+        }
+        hprofGraphIdentityOutput.reset()
+        commandLine "${System.getProperty('java.home')}/bin/java",
+                '-cp', "${buildDir}/RunJPF.jar${File.pathSeparator}${buildDir}/deps/*",
+                'gov.nasa.jpf.tool.RunJPF',
+                "+hprof.file=${hprofGraphIdentityDump.absolutePath}",
+                hprofGraphIdentityConfig.absolutePath
+        standardOutput = hprofGraphIdentityOutput
+    }
+    doLast {
+        String output = hprofGraphIdentityOutput.toString('UTF-8')
+        print output
+        def requiredDiagnostics = [
+                '[HPROF-JPF] import complete: objects=3 arrays=0 mappings=3 primitiveFields=3 references=5 arrayElements=0',
+                '[HPROF-JPF] HAHA null OBJECT representation: Graph.nullable raw=null',
+                '[HPROF-JPF] null verified:',
+                '[HPROF-JPF] alias verified:',
+                '[HPROF-JPF] cycle verified:',
+                '[HPROF-JPF-MODEL] pre-GC graph identity semantics verified',
+                '[HPROF-JPF] graph identity controlled GC verified: cycles=1',
+                '[HPROF-JPF-MODEL] post-GC graph identity semantics verified',
+                '[HPROF-JPF-MODEL] graph identity semantics verified',
+                'no errors detected'
+        ]
+        requiredDiagnostics.each { diagnostic ->
+            if (!output.contains(diagnostic)) {
+                throw new GradleException(
+                        "Graph-identity regression did not report required success diagnostic: ${diagnostic}")
+            }
+        }
+    }
+}
+
+tasks.register('hprofGraphIdentityTest') {
+    group = "verification"
+    description = "Verifies HPROF -> JPF null, aliasing, cyclic topology, and GC preservation."
+
+    dependsOn runHprofGraphIdentityJpf
+    doLast {
+        println 'HPROF -> JPF graph identity regression passed'
+    }
+}
+
+tasks.register('hprofRegressionTest') {
+    group = "verification"
+    description = "Runs all durable HPROF -> JPF regressions."
+
+    dependsOn hprofSmokeTest
+    dependsOn hprofGraphIdentityTest
+}

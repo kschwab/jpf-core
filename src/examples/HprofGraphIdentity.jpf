@@ -1,0 +1,9 @@
+target=HprofGraphIdentityTarget
+
+listener=gov.nasa.jpf.listener.HprofHeapBootstrap
+hprof.file=${config_path}/hprof-graph-identity.hprof
+hprof.classes=HprofGraphIdentityGraph$Graph,HprofGraphIdentityGraph$Node
+hprof.test_root.source_class=HprofGraphIdentityGraph$Graph
+hprof.test_root.holder_class=HprofGraphIdentityGraph
+hprof.test_root.field=root
+hprof.graph_identity_validate=true
