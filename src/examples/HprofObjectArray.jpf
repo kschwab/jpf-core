@@ -1,0 +1,9 @@
+target=HprofObjectArrayTarget
+
+listener=gov.nasa.jpf.listener.HprofHeapBootstrap
+hprof.file=${config_path}/hprof-object-array.hprof
+hprof.classes=HprofObjectArrayGraph$ArrayGraph,HprofObjectArrayGraph$Node
+hprof.test_root.source_class=HprofObjectArrayGraph$ArrayGraph
+hprof.test_root.holder_class=HprofObjectArrayGraph
+hprof.test_root.field=root
+hprof.test_support.class=gov.nasa.jpf.vm.hprof.HprofObjectArrayValidator

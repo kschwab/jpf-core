@@ -12,6 +12,7 @@ import gov.nasa.jpf.vm.hprof.HprofPassASmokeRootBinder;
 import gov.nasa.jpf.vm.hprof.HprofPassASmokeValidator;
 import gov.nasa.jpf.vm.hprof.HprofSnapshotLoader;
 import gov.nasa.jpf.vm.hprof.HprofTestRootBinder;
+import gov.nasa.jpf.vm.hprof.HprofTestSupport;
 import gov.nasa.jpf.vm.hprof.HprofView;
 import gov.nasa.jpf.vm.hprof.JpfHeapImporter;
 
@@ -34,6 +35,7 @@ public class HprofHeapBootstrap extends ListenerAdapter {
   private final String testRootField;
   private final boolean graphIdentityValidate;
   private HprofGraphIdentityValidator graphIdentityValidator;
+  private final HprofTestSupport testSupport;
 
   public HprofHeapBootstrap(Config conf) {
     String path = conf.getString("hprof.file");
@@ -61,6 +63,7 @@ public class HprofHeapBootstrap extends ListenerAdapter {
     testRootHolderClass = conf.getString("hprof.test_root.holder_class");
     testRootField = conf.getString("hprof.test_root.field");
     graphIdentityValidate = conf.getBoolean("hprof.graph_identity_validate", false);
+    testSupport = conf.getInstance("hprof.test_support.class", HprofTestSupport.class);
     int testRootParts = nonEmpty(testRootSourceClass) + nonEmpty(testRootHolderClass)
         + nonEmpty(testRootField);
     if (testRootParts != 0 && testRootParts != 3) {
@@ -68,6 +71,9 @@ public class HprofHeapBootstrap extends ListenerAdapter {
     }
     if (graphIdentityValidate && testRootParts != 3) {
       throw new JPFConfigException("hprof.graph_identity_validate requires hprof.test_root configuration");
+    }
+    if (testSupport != null && testRootParts != 3) {
+      throw new JPFConfigException("hprof.test_support.class requires hprof.test_root configuration");
     }
   }
 
@@ -94,6 +100,9 @@ public class HprofHeapBootstrap extends ListenerAdapter {
         if (graphIdentityValidate) {
           graphIdentityValidator = HprofGraphIdentityValidator.create(vm, view, result, graphRef);
         }
+        if (testSupport != null) {
+          testSupport.initialize(vm, view, result, graphRef);
+        }
       }
       if (smokeValidate) {
         HprofPassASmokeValidator.validate(vm, view, result);
@@ -111,6 +120,9 @@ public class HprofHeapBootstrap extends ListenerAdapter {
     if (graphIdentityValidator != null) {
       graphIdentityValidator.gcBegin();
     }
+    if (testSupport != null) {
+      testSupport.gcBegin();
+    }
   }
 
   @Override
@@ -120,6 +132,9 @@ public class HprofHeapBootstrap extends ListenerAdapter {
     }
     if (graphIdentityValidator != null) {
       graphIdentityValidator.gcEnd(vm);
+    }
+    if (testSupport != null) {
+      testSupport.gcEnd(vm);
     }
   }
 

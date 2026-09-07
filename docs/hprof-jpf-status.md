@@ -12,6 +12,18 @@ Graph identity regression:
 ./gradlew hprofGraphIdentityTest
 ```
 
+Object-array topology regression:
+
+~~~bash
+./gradlew hprofObjectArrayTest
+~~~
+
+All HPROF regressions:
+
+~~~bash
+./gradlew hprofRegressionTest
+~~~
+
 This single command creates a fresh build-owned HotSpot HPROF, reconstructs the selected graph in JPF, validates it from host and modeled Java code, deliberately runs JPF garbage collection, and verifies post-GC preservation.
 
 ## Research Goal
@@ -55,7 +67,7 @@ HprofHeapBootstrap (configuration and VM lifecycle)
 
 The listener validates `hprof.file` and `hprof.classes`, loads the snapshot, constructs `HprofView`, invokes the importer, and optionally invokes the smoke validator when `hprof.smoke_validate=true`. The smoke configuration separately enables `hprof.smoke_bind_root=true`.
 
-Currently supported within selected classes is deliberately limited to `Type.INT` instance fields, `Type.OBJECT` references whose non-null target has a Pass A mapping, directly referenced `Type.INT` arrays, and their boxed-`Integer` payloads. Unsupported selected field types, unsupported directly referenced arrays, malformed values, and non-null references outside the selected identity graph cause a clear failure rather than an incomplete import.
+Currently supported within selected classes is deliberately limited to `Type.INT` instance fields, `Type.OBJECT` references whose non-null target has a Pass A mapping, directly referenced `Type.INT` arrays with boxed-`Integer` payloads, and directly referenced one-dimensional `Type.OBJECT` arrays whose non-null elements already have Pass A mappings. Unsupported selected field types, unsupported directly referenced arrays, malformed values, and non-null references outside the selected identity graph cause a clear failure rather than an incomplete import.
 
 ## State Reconstruction Coverage Matrix
 
@@ -78,7 +90,13 @@ Currently supported within selected classes is deliberately limited to `Type.INT
 | `float` field | unsupported |
 | `double` field | unsupported |
 | primitive arrays other than `int[]` | unsupported |
-| object arrays | unsupported |
+| object-array allocation | verified |
+| object-array reference payload | verified |
+| null object-array element | verified |
+| aliased object-array elements | verified |
+| cycles through object arrays | verified |
+| shared identity across field/array edges | verified |
+| GC preservation of object arrays | verified |
 | inherited fields | unverified |
 | HPROF statics | unsupported |
 | HPROF GC roots | unsupported |
@@ -171,6 +189,8 @@ Pass A and Pass B.1 through B.4 are complete. The reconstructed JPF graph has `F
 **PASS D.1 — DURABLE SINGLE-COMMAND REGRESSION: COMPLETE**
 
 **PASS E.1 — GRAPH IDENTITY SEMANTICS: COMPLETE**
+
+**PASS E.2 — OBJECT-ARRAY TOPOLOGY: COMPLETE**
 
 The same reconstructed Foo is bound to modeled `HprofPassASmokeGraph.root`, and ordinary bytecode in `HprofPassASmokeTarget.main()` reads and validates the complete graph.
 
@@ -358,3 +378,47 @@ IDs vary between generated dumps and are never hard-coded. Host validation prove
 `HprofTestRootBinder` is a small test-only generalization accepting an exact source HPROF class, modeled holder class, and static field. `HprofPassASmokeRootBinder` remains as the frozen Foo/Bar wrapper. This mechanism still is not generic HPROF static-field or GC-root reconstruction.
 
 No architectural correction was exposed: allocating all selected instances before reference population naturally preserves nulls, aliases, forward/back references, and cycles without traversal recursion or duplicate shells.
+
+## Pass E.2 — Object-Array Topology
+
+The isolated ./gradlew hprofObjectArrayTest regression generates build/hprof-smoke/hprof-object-array.hprof in a real HotSpot process, then runs a separate JPF process. The original basic and graph-identity fixtures remain unchanged.
+
+~~~text
+ArrayGraph(marker=77)
+  anchor ---------------------> Node(a,id=1)
+  nodes -> Node[4]                 |  ^     |
+             [0] -----------------+  |     +-- links -> same Node[]
+             [1] -> Node(b,id=2) ----+          (Node[] -> a -> Node[] cycle)
+             [2] -> same Node(a)
+             [3] -> null
+Node(a).peer -> Node(b)
+Node(b).peer -> Node(a)
+Node(b).links -> null
+~~~
+
+HAHA 2.0.4 reports the array as Type.OBJECT. ArrayInstance.getValues() is declared Object[] and returns runtime [Ljava.lang.Object;. Non-null entries are com.squareup.haha.perflib.ClassInstance objects (therefore Instance) and a null entry is Java null, not an HPROF-ID scalar.
+
+For HPROF class name [LHprofObjectArrayGraph$Node;, local GenericHeap.newArray(...) expects element signature LHprofObjectArrayGraph$Node; (the leading array bracket is omitted). The resulting JPF ClassInfo name is [LHprofObjectArrayGraph$Node;. Pass B writes and verifies elements with ElementInfo.setReferenceElement(index, ref) and getReferenceElement(index).
+
+Pass A continues to select ordinary instances only by exact hprof.classes names. It discovers and deduplicates only supported arrays directly referenced by selected objects. Object-array elements are not recursively selected: every non-null element must already have a refMap entry, which E.2 ensures by explicitly selecting both ArrayGraph and Node. Missing mappings and unsupported shapes/types fail clearly.
+
+~~~text
+[HPROF-JPF] import complete: objects=3 arrays=1 mappings=4 primitiveFields=3 references=6 arrayElements=4
+[HPROF-JPF] object-array mappings: ArrayGraph HPROF=0x70ae3f7e0 JPF=191 Node(a) HPROF=0x70ae3f5c0 JPF=192 Node(b) HPROF=0x70ae3f5d8 JPF=193 Node[] HPROF=0x70ae3f660 JPF=197
+[HPROF-JPF] object-array alias verified: graph.anchor=ref 192 nodes[0]=ref 192 nodes[2]=ref 192
+[HPROF-JPF] object-array null verified: nodes[3]=0
+[HPROF-JPF] object-array cycle verified: nodes=ref 197 -> Node(a)=ref 192 -> links=ref 197
+[HPROF-JPF-MODEL] pre-GC object-array topology verified
+[HPROF-JPF] object-array controlled GC verified: cycles=1
+[HPROF-JPF-MODEL] post-GC object-array topology verified
+~~~
+
+references=6 counts every selected ordinary Type.OBJECT field, including Node(b).links=null. arrayElements=4 counts restored payload slots for both supported int and object arrays, including null reference elements.
+
+The listener uses optional configured hprof.test_support.class through the small HprofTestSupport lifecycle interface. E.2 therefore adds no third hard-coded fixture branch. Older smoke and graph-identity routing remains unchanged.
+
+Two consecutive ./gradlew hprofObjectArrayTest --no-daemon runs succeeded. Separate hprofSmokeTest and hprofGraphIdentityTest runs succeeded, and the updated hprofRegressionTest aggregate ran all three successfully. Every JPF execution ended with no errors detected.
+
+Current limitation: object arrays are directly referenced, one-dimensional arrays only; their non-null elements must be among explicitly selected ordinary classes. No arbitrary recursive heap traversal was added.
+
+Recommended next semantic dimension: inherited instance fields, because they test field-layout fidelity without adding scalar types.

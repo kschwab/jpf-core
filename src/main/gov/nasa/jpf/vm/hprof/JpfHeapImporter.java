@@ -73,13 +73,12 @@ public final class JpfHeapImporter {
 
       collectDirectlyReferencedArrays();
       for (ArrayInstance array : selectedArrays.values()) {
-        require(array.getArrayType() == Type.INT,
-            "unsupported selected array type: " + array.getArrayType());
-        ElementInfo ei = jpfHeap.newArray("I", array.getValues().length, ti);
+        String elementType = jpfArrayElementType(array);
+        ElementInfo ei = jpfHeap.newArray(elementType, array.getValues().length, ti);
         putIdentity(array.getId(), ei.getObjectRef());
         arrays++;
-        System.out.printf("[HPROF-JPF] array HPROF=0x%x JPF=%d type=int[] length=%d%n",
-            array.getId(), ei.getObjectRef(), array.getValues().length);
+        System.out.printf("[HPROF-JPF] array HPROF=0x%x JPF=%d type=%s length=%d%n",
+            array.getId(), ei.getObjectRef(), ei.getClassInfo().getName(), array.getValues().length);
       }
     }
 
@@ -126,23 +125,47 @@ public final class JpfHeapImporter {
       }
 
       for (ArrayInstance array : selectedArrays.values()) {
-        require(array.getArrayType() == Type.INT,
-            "unsupported selected array payload type: " + array.getArrayType());
         int jpfRef = mappedRef(array.getId(), "selected array");
         ElementInfo ei = jpfHeap.getModifiable(jpfRef);
         Object[] values = array.getValues();
-        require(ei.isArray() && "[I".equals(ei.getClassInfo().getName()),
-            "mapped JPF object is not int[] for HPROF 0x" + Long.toHexString(array.getId()));
+        String expectedClassName = expectedJpfArrayClassName(array);
+        require(ei.isArray() && expectedClassName.equals(ei.getClassInfo().getName()),
+            "mapped JPF object is not " + expectedClassName + " for HPROF 0x"
+                + Long.toHexString(array.getId()));
         require(ei.arrayLength() == values.length,
             "HPROF and JPF array lengths differ for HPROF 0x" + Long.toHexString(array.getId()));
-        for (int i = 0; i < values.length; i++) {
-          require(values[i] instanceof Integer,
-              "int[] element " + i + " is not represented by an Integer");
-          int value = (Integer) values[i];
-          ei.setIntElement(i, value);
-          arrayElements++;
-          System.out.printf("[HPROF-JPF] array-element HPROF=0x%x JPF=%d index=%d value=%d%n",
-              array.getId(), jpfRef, i, value);
+        if (array.getArrayType() == Type.INT) {
+          for (int i = 0; i < values.length; i++) {
+            require(values[i] instanceof Integer,
+                "int[] element " + i + " is not represented by an Integer");
+            int value = (Integer) values[i];
+            ei.setIntElement(i, value);
+            arrayElements++;
+            System.out.printf("[HPROF-JPF] array-element HPROF=0x%x JPF=%d index=%d value=%d%n",
+                array.getId(), jpfRef, i, value);
+          }
+        } else if (array.getArrayType() == Type.OBJECT) {
+          for (int i = 0; i < values.length; i++) {
+            Object value = values[i];
+            int targetRef = MJIEnv.NULL;
+            long targetId = 0;
+            String targetClass = "null";
+            if (value != null) {
+              require(value instanceof Instance,
+                  "object-array element " + i + " is not represented by an Instance");
+              Instance target = (Instance) value;
+              targetId = target.getId();
+              targetRef = mappedRef(targetId, "object-array element " + i + " target");
+              targetClass = target.getClassObj().getClassName();
+            }
+            ei.setReferenceElement(i, targetRef);
+            arrayElements++;
+            System.out.printf("[HPROF-JPF] array-reference HPROF=0x%x JPF=%d index=%d "
+                    + "targetHPROF=0x%x targetJPF=%d targetClass=%s%n",
+                array.getId(), jpfRef, i, targetId, targetRef, targetClass);
+          }
+        } else {
+          throw unsupported("selected array payload has type " + array.getArrayType());
         }
       }
     }
@@ -173,13 +196,34 @@ public final class JpfHeapImporter {
           if (fieldValue.getField().getType() == Type.OBJECT
               && fieldValue.getValue() instanceof ArrayInstance) {
             ArrayInstance array = (ArrayInstance) fieldValue.getValue();
-            require(array.getArrayType() == Type.INT,
+            require(array.getArrayType() == Type.INT || array.getArrayType() == Type.OBJECT,
                 fieldDescription(instance, fieldValue.getField().getName())
                     + " references unsupported array type " + array.getArrayType());
             selectedArrays.put(array.getId(), array);
           }
         }
       }
+    }
+
+    private String jpfArrayElementType(ArrayInstance array) {
+      if (array.getArrayType() == Type.INT) {
+        return "I";
+      }
+      if (array.getArrayType() == Type.OBJECT) {
+        String arrayClassName = expectedJpfArrayClassName(array);
+        require(arrayClassName.startsWith("[L") && arrayClassName.endsWith(";"),
+            "unsupported object-array class name: " + arrayClassName);
+        return arrayClassName.substring(1);
+      }
+      throw unsupported("selected array type " + array.getArrayType());
+    }
+
+    private String expectedJpfArrayClassName(ArrayInstance array) {
+      if (array.getArrayType() == Type.INT) {
+        return "[I";
+      }
+      require(array.getClassObj() != null, "selected object array has no ClassObj");
+      return array.getClassObj().getClassName();
     }
 
     private void putIdentity(long hprofId, int jpfRef) {

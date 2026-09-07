@@ -539,10 +539,95 @@ tasks.register('hprofGraphIdentityTest') {
     }
 }
 
+// Object-array topology regression.
+def hprofObjectArrayDump = file("${hprofSmokeDir}/hprof-object-array.hprof")
+def hprofObjectArrayConfig = file("${projectDir}/src/examples/HprofObjectArray.jpf")
+def hprofObjectArrayOutput = new ByteArrayOutputStream()
+
+tasks.register('generateHprofObjectArrayDump', JavaExec) {
+    group = "verification"
+    description = "Generates the object-array topology HPROF fixture in a real HotSpot JVM."
+
+    dependsOn compileExamplesJava
+    classpath = files(sourceSets.examples.output)
+    mainClass = 'HprofObjectArrayDumpGenerator'
+    args hprofObjectArrayDump.absolutePath
+
+    outputs.file(hprofObjectArrayDump)
+    outputs.upToDateWhen { false }
+
+    doFirst {
+        hprofSmokeDir.mkdirs()
+        delete hprofObjectArrayDump
+        println "Generating object-array HPROF at ${hprofObjectArrayDump}"
+    }
+    doLast {
+        if (!hprofObjectArrayDump.isFile() || hprofObjectArrayDump.length() == 0) {
+            throw new GradleException(
+                    "HotSpot dump generator did not produce a non-empty object-array HPROF: ${hprofObjectArrayDump}")
+        }
+    }
+}
+
+tasks.register('runHprofObjectArrayJpf', Exec) {
+    group = "verification"
+    description = "Runs JPF against the fresh object-array topology HPROF fixture."
+
+    dependsOn buildJars
+    dependsOn generateHprofObjectArrayDump
+    outputs.upToDateWhen { false }
+
+    doFirst {
+        if (!hprofObjectArrayDump.isFile() || hprofObjectArrayDump.length() == 0) {
+            throw new GradleException("Object-array HPROF is missing or empty: ${hprofObjectArrayDump}")
+        }
+        hprofObjectArrayOutput.reset()
+        commandLine "${System.getProperty('java.home')}/bin/java",
+                '-cp', "${buildDir}/RunJPF.jar${File.pathSeparator}${buildDir}/deps/*",
+                'gov.nasa.jpf.tool.RunJPF',
+                "+hprof.file=${hprofObjectArrayDump.absolutePath}",
+                hprofObjectArrayConfig.absolutePath
+        standardOutput = hprofObjectArrayOutput
+    }
+    doLast {
+        String output = hprofObjectArrayOutput.toString('UTF-8')
+        print output
+        def requiredDiagnostics = [
+                '[HPROF-JPF] import complete: objects=3 arrays=1 mappings=4 primitiveFields=3 references=6 arrayElements=4',
+                '[HPROF-JPF] HAHA object-array representation: type=OBJECT',
+                '[HPROF-JPF] object-array alias verified:',
+                '[HPROF-JPF] object-array null verified:',
+                '[HPROF-JPF] object-array cycle verified:',
+                '[HPROF-JPF-MODEL] pre-GC object-array topology verified',
+                '[HPROF-JPF] object-array controlled GC verified: cycles=1',
+                '[HPROF-JPF-MODEL] post-GC object-array topology verified',
+                '[HPROF-JPF-MODEL] object-array topology verified',
+                'no errors detected'
+        ]
+        requiredDiagnostics.each { diagnostic ->
+            if (!output.contains(diagnostic)) {
+                throw new GradleException(
+                        "Object-array regression did not report required success diagnostic: ${diagnostic}")
+            }
+        }
+    }
+}
+
+tasks.register('hprofObjectArrayTest') {
+    group = "verification"
+    description = "Verifies HPROF -> JPF object-array topology and GC preservation."
+
+    dependsOn runHprofObjectArrayJpf
+    doLast {
+        println 'HPROF -> JPF object-array regression passed'
+    }
+}
+
 tasks.register('hprofRegressionTest') {
     group = "verification"
     description = "Runs all durable HPROF -> JPF regressions."
 
     dependsOn hprofSmokeTest
     dependsOn hprofGraphIdentityTest
+    dependsOn hprofObjectArrayTest
 }
