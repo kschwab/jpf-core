@@ -142,17 +142,7 @@ public final class JpfHeapImporter {
                 + Long.toHexString(array.getId()));
         require(ei.arrayLength() == values.length,
             "HPROF and JPF array lengths differ for HPROF 0x" + Long.toHexString(array.getId()));
-        if (array.getArrayType() == Type.INT) {
-          for (int i = 0; i < values.length; i++) {
-            require(values[i] instanceof Integer,
-                "int[] element " + i + " is not represented by an Integer");
-            int value = (Integer) values[i];
-            ei.setIntElement(i, value);
-            arrayElements++;
-            System.out.printf("[HPROF-JPF] array-element HPROF=0x%x JPF=%d index=%d value=%d%n",
-                array.getId(), jpfRef, i, value);
-          }
-        } else if (array.getArrayType() == Type.OBJECT) {
+        if (array.getArrayType() == Type.OBJECT) {
           for (int i = 0; i < values.length; i++) {
             Object value = values[i];
             int targetRef = MJIEnv.NULL;
@@ -173,8 +163,56 @@ public final class JpfHeapImporter {
                 array.getId(), jpfRef, i, targetId, targetRef, targetClass);
           }
         } else {
-          throw unsupported("selected array payload has type " + array.getArrayType());
+          for (int i = 0; i < values.length; i++) {
+            Object value = values[i];
+            setPrimitiveArrayElement(ei, i, array.getArrayType(), value);
+            arrayElements++;
+            System.out.printf("[HPROF-JPF] array-element HPROF=0x%x JPF=%d type=%s "
+                    + "index=%d value=%s%n",
+                array.getId(), jpfRef, array.getArrayType(), i, value);
+          }
         }
+      }
+    }
+
+    private void setPrimitiveArrayElement(
+        ElementInfo array, int index, Type type, Object value) {
+      String description = type + " array element " + index;
+      switch (type) {
+        case BOOLEAN:
+          require(value instanceof Boolean, description + " is not represented by a Boolean");
+          array.setBooleanElement(index, (Boolean) value);
+          return;
+        case BYTE:
+          require(value instanceof Byte, description + " is not represented by a Byte");
+          array.setByteElement(index, (Byte) value);
+          return;
+        case CHAR:
+          require(value instanceof Character, description + " is not represented by a Character");
+          array.setCharElement(index, (Character) value);
+          return;
+        case SHORT:
+          require(value instanceof Short, description + " is not represented by a Short");
+          array.setShortElement(index, (Short) value);
+          return;
+        case INT:
+          require(value instanceof Integer, description + " is not represented by an Integer");
+          array.setIntElement(index, (Integer) value);
+          return;
+        case LONG:
+          require(value instanceof Long, description + " is not represented by a Long");
+          array.setLongElement(index, (Long) value);
+          return;
+        case FLOAT:
+          require(value instanceof Float, description + " is not represented by a Float");
+          array.setFloatElement(index, (Float) value);
+          return;
+        case DOUBLE:
+          require(value instanceof Double, description + " is not represented by a Double");
+          array.setDoubleElement(index, (Double) value);
+          return;
+        default:
+          throw unsupported("primitive array payload has type " + type);
       }
     }
 
@@ -273,9 +311,9 @@ public final class JpfHeapImporter {
           if (fieldValue.getField().getType() == Type.OBJECT
               && fieldValue.getValue() instanceof ArrayInstance) {
             ArrayInstance array = (ArrayInstance) fieldValue.getValue();
-            require(array.getArrayType() == Type.INT || array.getArrayType() == Type.OBJECT,
-                fieldDescription(instance, fieldValue.getField().getName())
-                    + " references unsupported array type " + array.getArrayType());
+            if (array.getArrayType() != Type.OBJECT) {
+              jpfPrimitiveArraySignature(array.getArrayType());
+            }
             selectedArrays.put(array.getId(), array);
           }
         }
@@ -283,24 +321,35 @@ public final class JpfHeapImporter {
     }
 
     private String jpfArrayElementType(ArrayInstance array) {
-      if (array.getArrayType() == Type.INT) {
-        return "I";
-      }
       if (array.getArrayType() == Type.OBJECT) {
         String arrayClassName = expectedJpfArrayClassName(array);
         require(arrayClassName.startsWith("[L") && arrayClassName.endsWith(";"),
             "unsupported object-array class name: " + arrayClassName);
         return arrayClassName.substring(1);
       }
-      throw unsupported("selected array type " + array.getArrayType());
+      return jpfPrimitiveArraySignature(array.getArrayType());
     }
 
     private String expectedJpfArrayClassName(ArrayInstance array) {
-      if (array.getArrayType() == Type.INT) {
-        return "[I";
+      if (array.getArrayType() != Type.OBJECT) {
+        return "[" + jpfPrimitiveArraySignature(array.getArrayType());
       }
       require(array.getClassObj() != null, "selected object array has no ClassObj");
       return array.getClassObj().getClassName();
+    }
+
+    private String jpfPrimitiveArraySignature(Type type) {
+      switch (type) {
+        case BOOLEAN: return "Z";
+        case BYTE: return "B";
+        case CHAR: return "C";
+        case SHORT: return "S";
+        case INT: return "I";
+        case LONG: return "J";
+        case FLOAT: return "F";
+        case DOUBLE: return "D";
+        default: throw unsupported("primitive array type " + type);
+      }
     }
 
     private void putIdentity(long hprofId, int jpfRef) {

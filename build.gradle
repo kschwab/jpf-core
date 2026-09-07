@@ -793,6 +793,93 @@ tasks.register('hprofPrimitiveScalarTest') {
     }
 }
 
+// Complete primitive-array regression.
+def hprofPrimitiveArrayDump = file("${hprofSmokeDir}/hprof-primitive-arrays.hprof")
+def hprofPrimitiveArrayConfig = file("${projectDir}/src/examples/HprofPrimitiveArray.jpf")
+def hprofPrimitiveArrayOutput = new ByteArrayOutputStream()
+
+tasks.register('generateHprofPrimitiveArrayDump', JavaExec) {
+    group = "verification"
+    description = "Generates the primitive-array HPROF fixture in a real HotSpot JVM."
+
+    dependsOn compileExamplesJava
+    classpath = files(sourceSets.examples.output)
+    mainClass = 'HprofPrimitiveArrayDumpGenerator'
+    args hprofPrimitiveArrayDump.absolutePath
+
+    outputs.file(hprofPrimitiveArrayDump)
+    outputs.upToDateWhen { false }
+
+    doFirst {
+        hprofSmokeDir.mkdirs()
+        delete hprofPrimitiveArrayDump
+        println "Generating primitive-array HPROF at ${hprofPrimitiveArrayDump}"
+    }
+    doLast {
+        if (!hprofPrimitiveArrayDump.isFile() || hprofPrimitiveArrayDump.length() == 0) {
+            throw new GradleException(
+                    "HotSpot dump generator did not produce a non-empty primitive-array HPROF: ${hprofPrimitiveArrayDump}")
+        }
+    }
+}
+
+tasks.register('runHprofPrimitiveArrayJpf', Exec) {
+    group = "verification"
+    description = "Runs JPF against the fresh primitive-array HPROF fixture."
+
+    dependsOn buildJars
+    dependsOn generateHprofPrimitiveArrayDump
+    outputs.upToDateWhen { false }
+
+    doFirst {
+        if (!hprofPrimitiveArrayDump.isFile() || hprofPrimitiveArrayDump.length() == 0) {
+            throw new GradleException("Primitive-array HPROF is missing or empty: ${hprofPrimitiveArrayDump}")
+        }
+        hprofPrimitiveArrayOutput.reset()
+        commandLine "${System.getProperty('java.home')}/bin/java",
+                '-cp', "${buildDir}/RunJPF.jar${File.pathSeparator}${buildDir}/deps/*",
+                'gov.nasa.jpf.tool.RunJPF',
+                "+hprof.file=${hprofPrimitiveArrayDump.absolutePath}",
+                hprofPrimitiveArrayConfig.absolutePath
+        standardOutput = hprofPrimitiveArrayOutput
+    }
+    doLast {
+        String output = hprofPrimitiveArrayOutput.toString('UTF-8')
+        print output
+        def requiredDiagnostics = [
+                '[HPROF-JPF] import complete: objects=1 arrays=8 mappings=9 primitiveFields=1 references=8 arrayElements=24',
+                '[HPROF-JPF] array BOOLEAN booleans={true,false,true}',
+                '[HPROF-JPF] array BYTE bytes={-7,0,100}',
+                '[HPROF-JPF] array CHAR chars={U+0041,U+03A9,U+0000}',
+                '[HPROF-JPF] array SHORT shorts={-1234,0,30000}',
+                '[HPROF-JPF] array INT ints={-123456789,0,123456789}',
+                '[HPROF-JPF] array LONG longs verified',
+                '[HPROF-JPF] array FLOAT index=0 value=-13.25 bits=',
+                '[HPROF-JPF] array DOUBLE index=2 value=12345.125 bits=',
+                '[HPROF-JPF-MODEL] primitive arrays verified',
+                '[HPROF-JPF] primitive-array controlled GC verified: cycles=1',
+                '[HPROF-JPF-MODEL] post-GC primitive arrays verified',
+                'no errors detected'
+        ]
+        requiredDiagnostics.each { diagnostic ->
+            if (!output.contains(diagnostic)) {
+                throw new GradleException(
+                        "Primitive-array regression did not report required success diagnostic: ${diagnostic}")
+            }
+        }
+    }
+}
+
+tasks.register('hprofPrimitiveArrayTest') {
+    group = "verification"
+    description = "Verifies all primitive HPROF array types through modeled JPF and GC."
+
+    dependsOn runHprofPrimitiveArrayJpf
+    doLast {
+        println 'HPROF -> JPF primitive-array regression passed'
+    }
+}
+
 tasks.register('hprofRegressionTest') {
     group = "verification"
     description = "Runs all durable HPROF -> JPF regressions."
@@ -802,4 +889,5 @@ tasks.register('hprofRegressionTest') {
     dependsOn hprofObjectArrayTest
     dependsOn hprofInheritanceTest
     dependsOn hprofPrimitiveScalarTest
+    dependsOn hprofPrimitiveArrayTest
 }

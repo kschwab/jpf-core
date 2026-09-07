@@ -1,0 +1,9 @@
+target=HprofPrimitiveArrayTarget
+
+listener=gov.nasa.jpf.listener.HprofHeapBootstrap
+hprof.file=${config_path}/hprof-primitive-arrays.hprof
+hprof.classes=HprofPrimitiveArrayGraph$PrimitiveArrayGraph
+hprof.test_root.source_class=HprofPrimitiveArrayGraph$PrimitiveArrayGraph
+hprof.test_root.holder_class=HprofPrimitiveArrayGraph
+hprof.test_root.field=root
+hprof.test_support.class=gov.nasa.jpf.vm.hprof.HprofPrimitiveArrayValidator

@@ -24,6 +24,12 @@ Primitive-scalar regression:
 ./gradlew hprofPrimitiveScalarTest --no-daemon
 ~~~
 
+Primitive-array regression:
+
+~~~bash
+./gradlew hprofPrimitiveArrayTest --no-daemon
+~~~
+
 All HPROF regressions:
 
 ~~~bash
@@ -73,7 +79,7 @@ HprofHeapBootstrap (configuration and VM lifecycle)
 
 The listener validates `hprof.file` and `hprof.classes`, loads the snapshot, constructs `HprofView`, invokes the importer, and optionally invokes the smoke validator when `hprof.smoke_validate=true`. The smoke configuration separately enables `hprof.smoke_bind_root=true`.
 
-Currently supported within selected classes includes all eight Java primitive scalar instance-field types, `Type.OBJECT` references whose non-null target has a Pass A mapping, directly referenced `Type.INT` arrays with boxed-`Integer` payloads, and directly referenced one-dimensional `Type.OBJECT` arrays whose non-null elements already have Pass A mappings. Unsupported selected field types, unsupported directly referenced arrays, malformed values, and non-null references outside the selected identity graph cause a clear failure rather than an incomplete import.
+Currently supported within selected classes includes all eight Java primitive scalar instance-field types, `Type.OBJECT` references whose non-null target has a Pass A mapping, directly referenced arrays of every primitive HAHA `Type` with exact boxed payload validation, and directly referenced one-dimensional `Type.OBJECT` arrays whose non-null elements already have Pass A mappings. Unsupported selected field types, unsupported directly referenced arrays, malformed values, and non-null references outside the selected identity graph cause a clear failure rather than an incomplete import.
 
 ## State Reconstruction Coverage Matrix
 
@@ -81,8 +87,14 @@ Currently supported within selected classes includes all eight Java primitive sc
 |---|---|
 | `int` instance field | verified |
 | ordinary object reference | verified |
-| `int[]` reference | verified |
-| `int[]` contents | verified |
+| `boolean[]` allocation/payload | verified |
+| `byte[]` allocation/payload | verified |
+| `char[]` allocation/payload | verified |
+| `short[]` allocation/payload | verified |
+| `int[]` allocation/payload | verified |
+| `long[]` allocation/payload | verified |
+| `float[]` allocation/payload | verified |
+| `double[]` allocation/payload | verified |
 | modeled static smoke root | verified |
 | GC preservation | verified |
 | null reference | verified |
@@ -95,7 +107,6 @@ Currently supported within selected classes includes all eight Java primitive sc
 | `long` instance field | verified |
 | `float` instance field | verified |
 | `double` instance field | verified |
-| primitive arrays other than `int[]` | unsupported |
 | object-array allocation | verified |
 | object-array reference payload | verified |
 | null object-array element | verified |
@@ -552,3 +563,55 @@ F.1 changes scalar instance-field coverage only. Primitive arrays remain limited
 - Regressions: the new task passed twice; the five-fixture aggregate passed with every JPF run reporting `no errors detected`.
 - Current blocker: none for Pass F.1.
 - Recommended next milestone: Pass F.2, complete primitive-array coverage while keeping scalar and topology semantics frozen.
+
+## Pass F.2 — Complete Primitive Array Coverage
+
+The isolated `./gradlew hprofPrimitiveArrayTest --no-daemon` regression generates `build/hprof-smoke/hprof-primitive-arrays.hprof` in a real HotSpot JVM and imports it in a separate JPF host process. The selected graph is one `PrimitiveArrayGraph(marker=66)` with eight directly referenced length-three primitive arrays.
+
+HAHA 2.0.4 `ArrayInstance.getValues()` is declared `Object[]` and returns a runtime `Object[]` for every primitive array. Each element is boxed according to `getArrayType()`. Local `Heap.newArray(elementSignature, length, ti)` accepts the following primitive JVM signatures and produces the corresponding array `ClassInfo` name:
+
+| Java array | HAHA Type | HAHA element wrapper | JPF allocation signature / class | JPF element write/read API | Status |
+|---|---|---|---|---|---|
+| `boolean[]` | `BOOLEAN` | `Boolean` | `Z` / `[Z` | `setBooleanElement` / `getBooleanElement` | verified |
+| `byte[]` | `BYTE` | `Byte` | `B` / `[B` | `setByteElement` / `getByteElement` | verified |
+| `char[]` | `CHAR` | `Character` | `C` / `[C` | `setCharElement` / `getCharElement` | verified |
+| `short[]` | `SHORT` | `Short` | `S` / `[S` | `setShortElement` / `getShortElement` | verified |
+| `int[]` | `INT` | `Integer` | `I` / `[I` | `setIntElement` / `getIntElement` | verified |
+| `long[]` | `LONG` | `Long` | `J` / `[J` | `setLongElement` / `getLongElement` | verified |
+| `float[]` | `FLOAT` | `Float` | `F` / `[F` | `setFloatElement` / `getFloatElement` | verified |
+| `double[]` | `DOUBLE` | `Double` | `D` / `[D` | `setDoubleElement` / `getDoubleElement` | verified |
+
+The importer retains the existing selection boundary: only arrays directly referenced by explicitly selected ordinary instances are collected and deduplicated by HPROF ID. Primitive allocation uses an exact `Type`-to-signature helper. Primitive payload dispatch validates the exact wrapper before calling the matching typed `ElementInfo` setter. `Type.OBJECT` remains on its existing reference-element path.
+
+Host validation proved array identity, `[Z/[B/[C/[S/[I/[J/[F/[D` class identity, length, element ordering, signed integral widths, `U+03A9`, and `U+0000`. Floating-point JPF readback was compared by raw bits:
+
+~~~text
+float[]  = {0xC1540000, 0x00000000, 0x41540000}
+double[] = {0xC0C81C9000000000, 0x0000000000000000, 0x40C81C9000000000}
+~~~
+
+Observed regression summary:
+
+~~~text
+[HPROF-JPF] import complete: objects=1 arrays=8 mappings=9 primitiveFields=1 references=8 arrayElements=24
+[HPROF-JPF-MODEL] primitive arrays verified
+[HPROF-JPF] primitive-array controlled GC verified: cycles=1
+[HPROF-JPF-MODEL] post-GC primitive arrays verified
+no errors detected
+~~~
+
+All eight modeled reference fields retain the original Pass A array references before and after GC. Counts are one ordinary object, eight arrays, nine mappings, one primitive field, eight reference fields, and 24 array payload elements.
+
+Two consecutive primitive-array task runs succeeded. The updated `./gradlew hprofRegressionTest --no-daemon` aggregate ran the basic, graph-identity, object-array, inheritance, primitive-scalar, and primitive-array fixtures successfully; every JPF execution ended with `no errors detected`.
+
+F.2 adds no recursive selection, statics, roots, strings, class loaders, or execution state. Floating edge cases such as NaN payloads, infinities, and negative zero remain deliberately outside this fixture.
+
+## Session Handoff — Pass F.2
+
+- Changed: primitive-array allocation now maps every primitive HAHA `Type` to its exact JVM element signature; payload reconstruction uses exact boxed-wrapper validation and typed JPF element setters.
+- Fixture: one rooted `PrimitiveArrayGraph(marker=66)` with eight length-three primitive arrays.
+- Counts: objects=1, arrays=8, mappings=9, primitiveFields=1, references=8, arrayElements=24.
+- Proven: allocation and payload fidelity for all eight primitive arrays, array identity, signedness/width, char values, floating raw bits, modeled access, and post-GC preservation.
+- Regressions: the new task passed twice; the six-fixture aggregate passed without weakening prior validators.
+- Current blocker: none for Pass F.2.
+- Recommended next milestone: deliberately choose the next state category; strong candidates are generic static-field reconstruction or String representation, while HPROF roots and execution state remain larger architectural steps.
