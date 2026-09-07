@@ -98,17 +98,7 @@ public final class JpfHeapImporter {
           FieldInfo jpfField = declaringCi.getDeclaredInstanceField(fieldName);
           require(jpfField != null,
               fieldDescription(declaringClassName, fieldName) + " has no matching JPF FieldInfo");
-          if (fieldType == Type.INT) {
-            require(jpfField.isIntField(),
-                fieldDescription(declaringClassName, fieldName) + " is not a JPF int field");
-            require(value instanceof Integer,
-                fieldDescription(declaringClassName, fieldName) + " did not contain an Integer");
-            int intValue = (Integer) value;
-            ei.setIntField(jpfField, intValue);
-            primitiveFields++;
-            System.out.printf("[HPROF-JPF] field HPROF=0x%x JPF=%d class=%s field=%s value=%d%n",
-                instance.getId(), jpfRef, declaringClassName, fieldName, intValue);
-          } else if (fieldType == Type.OBJECT) {
+          if (fieldType == Type.OBJECT) {
             require(jpfField.isReference(),
                 fieldDescription(declaringClassName, fieldName) + " is not a JPF reference field");
             int targetRef = MJIEnv.NULL;
@@ -133,8 +123,11 @@ public final class JpfHeapImporter {
                 instance.getId(), jpfRef, declaringClassName, fieldName,
                 targetId, targetRef, targetClass);
           } else {
-            throw unsupported(
-                fieldDescription(declaringClassName, fieldName) + " has type " + fieldType);
+            setPrimitiveField(ei, jpfField, fieldType, value,
+                fieldDescription(declaringClassName, fieldName));
+            primitiveFields++;
+            System.out.printf("[HPROF-JPF] field HPROF=0x%x JPF=%d class=%s field=%s value=%s%n",
+                instance.getId(), jpfRef, declaringClassName, fieldName, value);
           }
         }
       }
@@ -182,6 +175,54 @@ public final class JpfHeapImporter {
         } else {
           throw unsupported("selected array payload has type " + array.getArrayType());
         }
+      }
+    }
+
+    private void setPrimitiveField(
+        ElementInfo ei, FieldInfo field, Type type, Object value, String description) {
+      switch (type) {
+        case BOOLEAN:
+          require(field.isBooleanField(), description + " is not a JPF boolean field");
+          require(value instanceof Boolean, description + " did not contain a Boolean");
+          ei.setBooleanField(field, (Boolean) value);
+          return;
+        case BYTE:
+          require(field.isByteField(), description + " is not a JPF byte field");
+          require(value instanceof Byte, description + " did not contain a Byte");
+          ei.setByteField(field, (Byte) value);
+          return;
+        case CHAR:
+          require(field.isCharField(), description + " is not a JPF char field");
+          require(value instanceof Character, description + " did not contain a Character");
+          ei.setCharField(field, (Character) value);
+          return;
+        case SHORT:
+          require(field.isShortField(), description + " is not a JPF short field");
+          require(value instanceof Short, description + " did not contain a Short");
+          ei.setShortField(field, (Short) value);
+          return;
+        case INT:
+          require(field.isIntField(), description + " is not a JPF int field");
+          require(value instanceof Integer, description + " did not contain an Integer");
+          ei.setIntField(field, (Integer) value);
+          return;
+        case LONG:
+          require(field.isLongField(), description + " is not a JPF long field");
+          require(value instanceof Long, description + " did not contain a Long");
+          ei.setLongField(field, (Long) value);
+          return;
+        case FLOAT:
+          require(field.isFloatField(), description + " is not a JPF float field");
+          require(value instanceof Float, description + " did not contain a Float");
+          ei.setFloatField(field, (Float) value);
+          return;
+        case DOUBLE:
+          require(field.isDoubleField(), description + " is not a JPF double field");
+          require(value instanceof Double, description + " did not contain a Double");
+          ei.setDoubleField(field, (Double) value);
+          return;
+        default:
+          throw unsupported(description + " has type " + type);
       }
     }
 

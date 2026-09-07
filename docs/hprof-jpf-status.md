@@ -18,6 +18,12 @@ Object-array topology regression:
 ./gradlew hprofObjectArrayTest
 ~~~
 
+Primitive-scalar regression:
+
+~~~bash
+./gradlew hprofPrimitiveScalarTest --no-daemon
+~~~
+
 All HPROF regressions:
 
 ~~~bash
@@ -67,7 +73,7 @@ HprofHeapBootstrap (configuration and VM lifecycle)
 
 The listener validates `hprof.file` and `hprof.classes`, loads the snapshot, constructs `HprofView`, invokes the importer, and optionally invokes the smoke validator when `hprof.smoke_validate=true`. The smoke configuration separately enables `hprof.smoke_bind_root=true`.
 
-Currently supported within selected classes is deliberately limited to `Type.INT` instance fields, `Type.OBJECT` references whose non-null target has a Pass A mapping, directly referenced `Type.INT` arrays with boxed-`Integer` payloads, and directly referenced one-dimensional `Type.OBJECT` arrays whose non-null elements already have Pass A mappings. Unsupported selected field types, unsupported directly referenced arrays, malformed values, and non-null references outside the selected identity graph cause a clear failure rather than an incomplete import.
+Currently supported within selected classes includes all eight Java primitive scalar instance-field types, `Type.OBJECT` references whose non-null target has a Pass A mapping, directly referenced `Type.INT` arrays with boxed-`Integer` payloads, and directly referenced one-dimensional `Type.OBJECT` arrays whose non-null elements already have Pass A mappings. Unsupported selected field types, unsupported directly referenced arrays, malformed values, and non-null references outside the selected identity graph cause a clear failure rather than an incomplete import.
 
 ## State Reconstruction Coverage Matrix
 
@@ -82,13 +88,13 @@ Currently supported within selected classes is deliberately limited to `Type.INT
 | null reference | verified |
 | reference aliasing | verified |
 | cyclic object graph | verified |
-| `boolean` field | unsupported |
-| `byte` field | unsupported |
-| `char` field | unsupported |
-| `short` field | unsupported |
-| `long` field | unsupported |
-| `float` field | unsupported |
-| `double` field | unsupported |
+| `boolean` instance field | verified |
+| `byte` instance field | verified |
+| `char` instance field | verified |
+| `short` instance field | verified |
+| `long` instance field | verified |
+| `float` instance field | verified |
+| `double` instance field | verified |
 | primitive arrays other than `int[]` | unsupported |
 | object-array allocation | verified |
 | object-array reference payload | verified |
@@ -487,3 +493,62 @@ No fundamental representation loss was found. HAHA omits declaring-class informa
 - Existing regressions: all remained unchanged in semantics and pass in the four-fixture aggregate.
 - Current blocker: none for Pass E.3.
 - Recommended next semantic dimension: additional primitive scalar types, implemented as a deliberate type-by-type coverage matrix rather than mixed with further topology changes.
+
+## Pass F.1 — Complete Primitive Scalar Coverage
+
+The isolated `./gradlew hprofPrimitiveScalarTest --no-daemon` regression generates `build/hprof-smoke/hprof-primitive-scalars.hprof` in a real HotSpot JVM and imports it in a separate JPF host process. The selected graph contains exactly one `PrimitiveGraph(marker=55)` referencing one `PrimitiveValues` instance with these non-default values:
+
+~~~text
+booleanValue = true
+byteValue    = -7
+charValue    = U+03A9
+shortValue   = 30000
+intValue     = 123456789
+longValue    = 0x0123456789ABCDEF
+floatValue   = 13.25f
+doubleValue  = -12345.125
+~~~
+
+HAHA 2.0.4's `Instance.readValue(Type)` and the generated fixture agree on the following exact representation and local JPF API mapping. Every write and read uses the declaring-class-aware `FieldInfo` resolved with `ClassInfo.getDeclaredInstanceField(name)`.
+
+| Java type | HAHA Type | HAHA runtime value | JPF write/read API | Status |
+|---|---|---|---|---|
+| `boolean` | `BOOLEAN` | `java.lang.Boolean` | `setBooleanField` / `getBooleanField` | verified |
+| `byte` | `BYTE` | `java.lang.Byte` | `setByteField` / `getByteField` | verified |
+| `char` | `CHAR` | `java.lang.Character` | `setCharField` / `getCharField` | verified |
+| `short` | `SHORT` | `java.lang.Short` | `setShortField` / `getShortField` | verified |
+| `int` | `INT` | `java.lang.Integer` | `setIntField` / `getIntField` | verified |
+| `long` | `LONG` | `java.lang.Long` | `setLongField` / `getLongField` | verified |
+| `float` | `FLOAT` | `java.lang.Float` | `setFloatField` / `getFloatField` | verified |
+| `double` | `DOUBLE` | `java.lang.Double` | `setDoubleField` / `getDoubleField` | verified |
+
+No signedness or width conversion is performed by the importer: it validates the exact HAHA wrapper and passes the unboxed Java value to the corresponding typed JPF `ElementInfo` API. This preserves the negative byte, non-ASCII char, large short, and 64-bit long without normalization. Host-side validation compares floating-point raw bits after JPF readback:
+
+~~~text
+[HPROF-JPF] primitive FLOAT floatValue=13.25 bits=0x41540000
+[HPROF-JPF] primitive DOUBLE doubleValue=-12345.125 bits=0xC0C81C9000000000
+~~~
+
+The durable regression observed:
+
+~~~text
+[HPROF-JPF] import complete: objects=2 arrays=0 mappings=2 primitiveFields=9 references=1 arrayElements=0
+[HPROF-JPF-MODEL] primitive scalar values verified
+[HPROF-JPF] primitive-scalar controlled GC verified: cycles=1
+[HPROF-JPF-MODEL] post-GC primitive scalar values verified
+no errors detected
+~~~
+
+The counts are two ordinary objects, no arrays, two mappings, nine primitive fields (`marker` plus eight values), one object-reference field, and no array elements. Two consecutive primitive-scalar task runs succeeded. The updated `./gradlew hprofRegressionTest --no-daemon` aggregate ran the basic, graph-identity, object-array, inheritance, and primitive-scalar regressions successfully without weakening earlier validators.
+
+F.1 changes scalar instance-field coverage only. Primitive arrays remain limited to the existing `int[]` implementation; floating-point edge cases such as NaN payloads, infinities, and signed zero were deliberately deferred.
+
+## Session Handoff — Pass F.1
+
+- Changed: `JpfHeapImporter` now dispatches every primitive scalar `Type` to its exact declaring-aware typed `ElementInfo` API and rejects unexpected HAHA wrappers.
+- Fixture: `PrimitiveGraph(marker=55)` references one `PrimitiveValues` containing all eight primitive scalar types.
+- Counts: objects=2, arrays=0, mappings=2, primitiveFields=9, references=1, arrayElements=0.
+- Proven: exact scalar width/signedness, U+03A9 char fidelity, 64-bit long fidelity, float/double raw-bit fidelity, modeled access, and post-GC preservation.
+- Regressions: the new task passed twice; the five-fixture aggregate passed with every JPF run reporting `no errors detected`.
+- Current blocker: none for Pass F.1.
+- Recommended next milestone: Pass F.2, complete primitive-array coverage while keeping scalar and topology semantics frozen.

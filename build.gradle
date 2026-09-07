@@ -706,6 +706,93 @@ tasks.register('hprofInheritanceTest') {
     }
 }
 
+// Complete primitive-scalar field regression.
+def hprofPrimitiveScalarDump = file("${hprofSmokeDir}/hprof-primitive-scalars.hprof")
+def hprofPrimitiveScalarConfig = file("${projectDir}/src/examples/HprofPrimitiveScalar.jpf")
+def hprofPrimitiveScalarOutput = new ByteArrayOutputStream()
+
+tasks.register('generateHprofPrimitiveScalarDump', JavaExec) {
+    group = "verification"
+    description = "Generates the primitive-scalar HPROF fixture in a real HotSpot JVM."
+
+    dependsOn compileExamplesJava
+    classpath = files(sourceSets.examples.output)
+    mainClass = 'HprofPrimitiveScalarDumpGenerator'
+    args hprofPrimitiveScalarDump.absolutePath
+
+    outputs.file(hprofPrimitiveScalarDump)
+    outputs.upToDateWhen { false }
+
+    doFirst {
+        hprofSmokeDir.mkdirs()
+        delete hprofPrimitiveScalarDump
+        println "Generating primitive-scalar HPROF at ${hprofPrimitiveScalarDump}"
+    }
+    doLast {
+        if (!hprofPrimitiveScalarDump.isFile() || hprofPrimitiveScalarDump.length() == 0) {
+            throw new GradleException(
+                    "HotSpot dump generator did not produce a non-empty primitive-scalar HPROF: ${hprofPrimitiveScalarDump}")
+        }
+    }
+}
+
+tasks.register('runHprofPrimitiveScalarJpf', Exec) {
+    group = "verification"
+    description = "Runs JPF against the fresh primitive-scalar HPROF fixture."
+
+    dependsOn buildJars
+    dependsOn generateHprofPrimitiveScalarDump
+    outputs.upToDateWhen { false }
+
+    doFirst {
+        if (!hprofPrimitiveScalarDump.isFile() || hprofPrimitiveScalarDump.length() == 0) {
+            throw new GradleException("Primitive-scalar HPROF is missing or empty: ${hprofPrimitiveScalarDump}")
+        }
+        hprofPrimitiveScalarOutput.reset()
+        commandLine "${System.getProperty('java.home')}/bin/java",
+                '-cp', "${buildDir}/RunJPF.jar${File.pathSeparator}${buildDir}/deps/*",
+                'gov.nasa.jpf.tool.RunJPF',
+                "+hprof.file=${hprofPrimitiveScalarDump.absolutePath}",
+                hprofPrimitiveScalarConfig.absolutePath
+        standardOutput = hprofPrimitiveScalarOutput
+    }
+    doLast {
+        String output = hprofPrimitiveScalarOutput.toString('UTF-8')
+        print output
+        def requiredDiagnostics = [
+                '[HPROF-JPF] import complete: objects=2 arrays=0 mappings=2 primitiveFields=9 references=1 arrayElements=0',
+                '[HPROF-JPF] primitive BOOLEAN booleanValue=true',
+                '[HPROF-JPF] primitive BYTE byteValue=-7',
+                '[HPROF-JPF] primitive CHAR charValue=U+03A9',
+                '[HPROF-JPF] primitive SHORT shortValue=30000',
+                '[HPROF-JPF] primitive INT intValue=123456789',
+                '[HPROF-JPF] primitive LONG longValue=0x0123456789ABCDEF',
+                '[HPROF-JPF] primitive FLOAT floatValue=13.25 bits=',
+                '[HPROF-JPF] primitive DOUBLE doubleValue=-12345.125 bits=',
+                '[HPROF-JPF-MODEL] primitive scalar values verified',
+                '[HPROF-JPF] primitive-scalar controlled GC verified: cycles=1',
+                '[HPROF-JPF-MODEL] post-GC primitive scalar values verified',
+                'no errors detected'
+        ]
+        requiredDiagnostics.each { diagnostic ->
+            if (!output.contains(diagnostic)) {
+                throw new GradleException(
+                        "Primitive-scalar regression did not report required success diagnostic: ${diagnostic}")
+            }
+        }
+    }
+}
+
+tasks.register('hprofPrimitiveScalarTest') {
+    group = "verification"
+    description = "Verifies all primitive HPROF scalar fields through modeled JPF and GC."
+
+    dependsOn runHprofPrimitiveScalarJpf
+    doLast {
+        println 'HPROF -> JPF primitive-scalar regression passed'
+    }
+}
+
 tasks.register('hprofRegressionTest') {
     group = "verification"
     description = "Runs all durable HPROF -> JPF regressions."
@@ -714,4 +801,5 @@ tasks.register('hprofRegressionTest') {
     dependsOn hprofGraphIdentityTest
     dependsOn hprofObjectArrayTest
     dependsOn hprofInheritanceTest
+    dependsOn hprofPrimitiveScalarTest
 }

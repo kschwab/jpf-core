@@ -1,0 +1,9 @@
+target=HprofPrimitiveScalarTarget
+
+listener=gov.nasa.jpf.listener.HprofHeapBootstrap
+hprof.file=${config_path}/hprof-primitive-scalars.hprof
+hprof.classes=HprofPrimitiveScalarGraph$PrimitiveGraph,HprofPrimitiveScalarGraph$PrimitiveValues
+hprof.test_root.source_class=HprofPrimitiveScalarGraph$PrimitiveGraph
+hprof.test_root.holder_class=HprofPrimitiveScalarGraph
+hprof.test_root.field=root
+hprof.test_support.class=gov.nasa.jpf.vm.hprof.HprofPrimitiveScalarValidator
