@@ -860,3 +860,28 @@ A wrong-metadata negative control was deliberately omitted: it would require wea
 - Regressions: two consecutive `hprofClassLifecycleTest` runs passed; the aggregate passed with `BUILD SUCCESSFUL` and 45 actionable tasks (31 executed, 14 up-to-date).
 - Current limitation: V1 cannot represent initializing ownership, failed initialization, or loader-qualified class identity.
 - Recommended next milestone: validate the metadata format's failure cases in focused unit tests, then decide whether loader-qualified identity or another bounded heap type is the next research priority.
+
+## Pass G.4 — Checkpoint Metadata V1 Hardening
+
+G.4 preserves the G.3 schema and reconstruction semantics while making the supplemental lifecycle channel fail closed. The valid V1 contract remains exactly:
+
+~~~properties
+checkpoint.version=1
+class.<exact-binary-name>=UNINITIALIZED|INITIALIZED
+~~~
+
+Valid input requires the supported version, a non-empty exact binary class identity, and one explicit supported lifecycle value per entry. Invalid input includes a missing or unsupported version, malformed lines, duplicate keys, unknown keys, empty class identities or lifecycle values, unknown lifecycle values, lifecycle entries outside `hprof.static_classes`, unresolvable selected lifecycle classes, and selected `<clinit>` classes without lifecycle metadata. No default lifecycle is inferred. Checkpoint reconstruction must fail closed when required continuation metadata is absent or ambiguous.
+
+`HprofCheckpointMetadataTest` provides lightweight parser coverage for the valid V1 values and seven malformed cases: missing version, version 999, unknown lifecycle, duplicate class entry, unknown key, empty class identity, and empty lifecycle value. Each rejection asserts both the specific cause and the source metadata filename.
+
+`hprofCheckpointMetadataTest` combines that unit test with three focused JPF-process semantic checks:
+
+- a selected `<clinit>` class without lifecycle metadata is rejected;
+- metadata naming a class outside `hprof.static_classes` is rejected;
+- metadata naming an unresolvable selected class is rejected clearly.
+
+The existing `hprofClassLifecycleTest` remains the positive behavioral regression for valid `UNINITIALIZED` and `INITIALIZED` continuation. The hardening task is included in `hprofRegressionTest` without creating additional HPROF captures beyond the existing class-initialization fixture.
+
+One launcher behavior matters for the negative checks: this checkout's `RunJPF` process can exit zero after a listener initialization exception. The semantic tasks therefore capture the combined process output and require both JPF's `[SEVERE] JPF exception` marker and the expected specific cause. Missing either fails Gradle. Parser failures use direct JUnit exception assertions and do not launch JPF.
+
+G.4 changes neither metadata V1 nor reconstruction coverage. `INITIALIZING`, initializing-thread identity, initialization failure, loader-qualified identity, and multi-loader lifecycle remain unsupported.

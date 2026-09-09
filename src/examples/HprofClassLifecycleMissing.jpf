@@ -1,0 +1,6 @@
+target=HprofClassLifecycleTarget
+target.args=UNINITIALIZED
+
+listener=gov.nasa.jpf.listener.HprofHeapBootstrap
+hprof.file=${config_path}/hprof-class-init-uninitialized.hprof
+hprof.static_classes=HprofClassInitState$InitEffects,HprofClassInitState$InitSubject

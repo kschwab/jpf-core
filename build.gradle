@@ -1111,6 +1111,124 @@ tasks.register('hprofClassLifecycleTest') {
     }
 }
 
+// Checkpoint metadata V1 parser and fail-closed semantic regressions.
+tasks.register('hprofCheckpointMetadataParserTest', Test) {
+    group = "verification"
+    description = "Runs focused unit tests for strict checkpoint metadata V1 parsing."
+    dependsOn testClasses
+    dependsOn compileModules
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    include '**/HprofCheckpointMetadataTest.class'
+    jacoco.enabled = false
+}
+
+def hprofLifecycleMissingConfig = file("${projectDir}/src/examples/HprofClassLifecycleMissing.jpf")
+def hprofLifecycleOutsideMetadata =
+        file("${projectDir}/src/examples/HprofClassLifecycleOutsideSelection.properties")
+def hprofLifecycleUnresolvedMetadata =
+        file("${projectDir}/src/examples/HprofClassLifecycleUnresolved.properties")
+def hprofLifecycleMissingOutput = new ByteArrayOutputStream()
+def hprofLifecycleOutsideOutput = new ByteArrayOutputStream()
+def hprofLifecycleUnresolvedOutput = new ByteArrayOutputStream()
+
+tasks.register('rejectHprofLifecycleMissingMetadata', Exec) {
+    group = "verification"
+    description = "Rejects a selected <clinit> class without lifecycle metadata."
+    dependsOn buildJars
+    dependsOn generateHprofClassInitUninitializedDump
+    ignoreExitValue = true
+    outputs.upToDateWhen { false }
+    doFirst {
+        hprofLifecycleMissingOutput.reset()
+        commandLine "${System.getProperty('java.home')}/bin/java",
+                '-cp', "${buildDir}/RunJPF.jar${File.pathSeparator}${buildDir}/deps/*",
+                'gov.nasa.jpf.tool.RunJPF',
+                "+hprof.file=${hprofClassInitUninitializedDump.absolutePath}",
+                hprofLifecycleMissingConfig.absolutePath
+        standardOutput = hprofLifecycleMissingOutput
+        errorOutput = hprofLifecycleMissingOutput
+    }
+    doLast {
+        String output = hprofLifecycleMissingOutput.toString('UTF-8')
+        if (!output.contains("[SEVERE] JPF exception")
+                || !output.contains('with <clinit> requires explicit lifecycle metadata')) {
+            throw new GradleException("Missing lifecycle metadata did not fail closed:\n${output}")
+        }
+        println '[HPROF-JPF] invalid metadata rejected: selected <clinit> class has no lifecycle entry'
+    }
+}
+
+tasks.register('rejectHprofLifecycleOutsideSelection', Exec) {
+    group = "verification"
+    description = "Rejects lifecycle metadata outside hprof.static_classes."
+    dependsOn buildJars
+    dependsOn generateHprofClassInitUninitializedDump
+    ignoreExitValue = true
+    outputs.upToDateWhen { false }
+    doFirst {
+        hprofLifecycleOutsideOutput.reset()
+        commandLine "${System.getProperty('java.home')}/bin/java",
+                '-cp', "${buildDir}/RunJPF.jar${File.pathSeparator}${buildDir}/deps/*",
+                'gov.nasa.jpf.tool.RunJPF',
+                "+hprof.file=${hprofClassInitUninitializedDump.absolutePath}",
+                "+hprof.lifecycle_file=${hprofLifecycleOutsideMetadata.absolutePath}",
+                '+hprof.static_classes=HprofClassInitState$InitEffects',
+                hprofLifecycleMissingConfig.absolutePath
+        standardOutput = hprofLifecycleOutsideOutput
+        errorOutput = hprofLifecycleOutsideOutput
+    }
+    doLast {
+        String output = hprofLifecycleOutsideOutput.toString('UTF-8')
+        String expected = 'lifecycle metadata class is not selected through hprof.static_classes: HprofClassInitState$InitSubject'
+        if (!output.contains("[SEVERE] JPF exception") || !output.contains(expected)) {
+            throw new GradleException("Out-of-selection lifecycle metadata was not rejected:\n${output}")
+        }
+        println '[HPROF-JPF] invalid metadata rejected: lifecycle class outside static selection'
+    }
+}
+
+tasks.register('rejectHprofLifecycleUnresolvedClass', Exec) {
+    group = "verification"
+    description = "Rejects lifecycle metadata for a class JPF cannot resolve."
+    dependsOn buildJars
+    dependsOn generateHprofClassInitUninitializedDump
+    ignoreExitValue = true
+    outputs.upToDateWhen { false }
+    doFirst {
+        hprofLifecycleUnresolvedOutput.reset()
+        commandLine "${System.getProperty('java.home')}/bin/java",
+                '-cp', "${buildDir}/RunJPF.jar${File.pathSeparator}${buildDir}/deps/*",
+                'gov.nasa.jpf.tool.RunJPF',
+                "+hprof.file=${hprofClassInitUninitializedDump.absolutePath}",
+                "+hprof.lifecycle_file=${hprofLifecycleUnresolvedMetadata.absolutePath}",
+                '+hprof.static_classes=HprofLifecycleClassThatDoesNotExist',
+                hprofLifecycleMissingConfig.absolutePath
+        standardOutput = hprofLifecycleUnresolvedOutput
+        errorOutput = hprofLifecycleUnresolvedOutput
+    }
+    doLast {
+        String output = hprofLifecycleUnresolvedOutput.toString('UTF-8')
+        if (!output.contains("[SEVERE] JPF exception")
+                || !output.contains('HprofLifecycleClassThatDoesNotExist')) {
+            throw new GradleException("Unresolvable lifecycle class was not rejected clearly:\n${output}")
+        }
+        println '[HPROF-JPF] invalid metadata rejected: lifecycle class cannot be resolved'
+    }
+}
+
+tasks.register('hprofCheckpointMetadataTest') {
+    group = "verification"
+    description = "Verifies strict V1 parsing and fail-closed lifecycle configuration semantics."
+    dependsOn hprofCheckpointMetadataParserTest
+    dependsOn rejectHprofLifecycleMissingMetadata
+    dependsOn rejectHprofLifecycleOutsideSelection
+    dependsOn rejectHprofLifecycleUnresolvedClass
+    doLast {
+        println 'HPROF checkpoint metadata V1 hardening regression passed'
+    }
+}
+
 tasks.register('hprofRegressionTest') {
     group = "verification"
     description = "Runs all durable HPROF -> JPF regressions."
@@ -1124,4 +1242,5 @@ tasks.register('hprofRegressionTest') {
     dependsOn hprofStaticStateTest
     dependsOn hprofClassInitTest
     dependsOn hprofClassLifecycleTest
+    dependsOn hprofCheckpointMetadataTest
 }
