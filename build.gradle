@@ -1354,6 +1354,97 @@ tasks.register('hprofClassLoaderStateTest') {
     doLast { println 'HPROF checkpoint loader-state characterization passed' }
 }
 
+// Checkpoint-bundle correlation and exact class-definition artifacts.
+def hprofCheckpointBundleDir = file("${hprofSmokeDir}/class-loader-checkpoint")
+def hprofCheckpointBundleOutput = new ByteArrayOutputStream()
+def hprofCheckpointBundleProbeConfig = file("${projectDir}/src/examples/HprofCheckpointBundleProbe.jpf")
+def hprofCheckpointBundleProbeOutput = new ByteArrayOutputStream()
+
+tasks.register('generateHprofCheckpointBundle', JavaExec) {
+    group = "verification"
+    description = "Captures an HPROF plus exact same-name/different-bytecode class artifacts."
+    dependsOn compileExamplesJava
+    classpath = files(sourceSets.examples.output)
+    mainClass = 'HprofCheckpointBundleCapture'
+    args hprofCheckpointBundleDir.absolutePath
+    outputs.upToDateWhen { false }
+    doFirst {
+        hprofSmokeDir.mkdirs()
+        delete hprofCheckpointBundleDir
+    }
+    doLast {
+        [file("${hprofCheckpointBundleDir}/heap.hprof"),
+         file("${hprofCheckpointBundleDir}/classes/class-1.class"),
+         file("${hprofCheckpointBundleDir}/classes/class-2.class")].each { artifact ->
+            if (!artifact.isFile() || artifact.length() == 0) {
+                throw new GradleException("Checkpoint capture artifact is missing or empty: ${artifact}")
+            }
+        }
+        delete file("${hprofCheckpointBundleDir}/.capture-work")
+    }
+}
+
+tasks.register('finalizeHprofCheckpointBundle', JavaExec) {
+    group = "verification"
+    description = "Resolves capture tags to HPROF IDs and integrity-binds the checkpoint bundle."
+    dependsOn compileJava
+    dependsOn copyRuntimeLibs
+    dependsOn generateHprofCheckpointBundle
+    classpath = files(sourceSets.main.output, configurations.runtimeClasspath)
+    mainClass = 'gov.nasa.jpf.vm.hprof.HprofCheckpointBundleBuilder'
+    args hprofCheckpointBundleDir.absolutePath
+    standardOutput = hprofCheckpointBundleOutput
+    outputs.upToDateWhen { false }
+    doFirst { hprofCheckpointBundleOutput.reset() }
+    doLast {
+        String output = hprofCheckpointBundleOutput.toString('UTF-8')
+        print output
+        ['[HPROF-JPF] checkpoint bundle verified: hprofHash=true classHashes=true relationships=true',
+         '[HPROF-JPF] same-name/different-bytecode artifacts verified: hashesDistinct=true',
+         '[HPROF-JPF] negative integrity control verified: tampered artifact rejected'].each { diagnostic ->
+            if (!output.contains(diagnostic)) {
+                throw new GradleException("Checkpoint bundle finalization missing: ${diagnostic}")
+            }
+        }
+    }
+}
+
+tasks.register('runHprofCheckpointBundleJpf', Exec) {
+    group = "verification"
+    description = "Executes the integrity-bound class artifacts under two modeled JPF loaders."
+    dependsOn buildJars
+    dependsOn finalizeHprofCheckpointBundle
+    outputs.upToDateWhen { false }
+    doFirst {
+        hprofCheckpointBundleProbeOutput.reset()
+        String artifactA = file("${hprofCheckpointBundleDir}/classes/class-1.class").absolutePath
+        String artifactB = file("${hprofCheckpointBundleDir}/classes/class-2.class").absolutePath
+        commandLine "${System.getProperty('java.home')}/bin/java",
+                '-cp', "${buildDir}/RunJPF.jar${File.pathSeparator}${buildDir}/deps/*",
+                'gov.nasa.jpf.tool.RunJPF',
+                "+target.args=${artifactA},${artifactB}",
+                hprofCheckpointBundleProbeConfig.absolutePath
+        standardOutput = hprofCheckpointBundleProbeOutput
+    }
+    doLast {
+        String output = hprofCheckpointBundleProbeOutput.toString('UTF-8')
+        print output
+        ['[HPROF-JPF-MODEL] packaged class definitions executed: values={111,222}',
+         '[HPROF-JPF] JPF minimum loader state verified:',
+         'no errors detected'].each { diagnostic ->
+            if (!output.contains(diagnostic)) {
+                throw new GradleException("Checkpoint bundle JPF probe missing: ${diagnostic}")
+            }
+        }
+    }
+}
+
+tasks.register('hprofCheckpointBundleTest') {
+    group = "verification"
+    description = "Correlates one HPROF with loader identities and exact executable class artifacts."
+    dependsOn runHprofCheckpointBundleJpf
+    doLast { println 'HPROF checkpoint-bundle correlation regression passed' }
+}
 tasks.register('hprofRegressionTest') {
     group = "verification"
     description = "Runs all durable HPROF -> JPF regressions."
@@ -1370,4 +1461,5 @@ tasks.register('hprofRegressionTest') {
     dependsOn hprofCheckpointMetadataTest
     dependsOn hprofClassLoaderIdentityTest
     dependsOn hprofClassLoaderStateTest
+    dependsOn hprofCheckpointBundleTest
 }

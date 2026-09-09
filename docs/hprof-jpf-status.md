@@ -60,6 +60,12 @@ Checkpoint loader-state characterization:
 ./gradlew hprofClassLoaderStateTest --no-daemon
 ~~~
 
+Checkpoint-bundle correlation regression:
+
+~~~bash
+./gradlew hprofCheckpointBundleTest --no-daemon
+~~~
+
 All HPROF regressions:
 
 ~~~bash
@@ -198,6 +204,16 @@ Currently supported within selected classes includes all eight Java primitive sc
 | modeled loader object -> `ClassLoaderInfo` registration | verified |
 | minimum duplicate-name JPF loader probe | verified |
 | loader external capability reconstruction | unsupported/fixture-dependent |
+| checkpoint-local loader logical identity | verified |
+| logical loader -> HPROF loader correlation | verified |
+| logical class -> HPROF ClassObj correlation | verified |
+| exact captured classfile artifact | verified |
+| bundle -> exact HPROF binding | verified |
+| class artifact integrity binding | verified |
+| same-name/different-bytecode packaging | verified |
+| generic loader-aware JPF import | unsupported |
+| generic loader capability replay | unsupported |
+| lifecycle schema loader qualification | unsupported in V1 |
 | thread state | deferred |
 | stack frames / program counters | deferred |
 | monitors | deferred |
@@ -1041,5 +1057,70 @@ It reuses the build-owned H.1 dump, validates the loader heap graph and incident
 - **Loader ordinary heap state:** present and reconstructable to the extent supported ordinary fields/references are captured.
 - **Loader external capability:** absent or fixture-dependent; not guaranteed by HPROF.
 - **JPF target representation:** sufficient, but requires explicit modeled loader objects, registered `ClassLoaderInfo` state, parent linkage, and a definition source.
-
 Metadata V1 remains binary-name keyed and system/default-loader-only. A future V2 must represent loader-qualified class identity, but H.2 intentionally defines no syntax. The next implementation must also decide how one checkpoint bundle correlates supplemental loader/definition artifacts with the HPROF loader object identity.
+
+
+## Pass H.3 — Checkpoint-Bundle Correlation and Class Definitions
+
+H.3 demonstrates a bundle-local correlation channel without changing lifecycle metadata V1 or `JpfHeapImporter`. Cross-capture identity is unnecessary for replay of one checkpoint: capture-assigned logical loader IDs `1`/`2` and logical class IDs `1`/`2` are unique only inside the generated bundle.
+
+### Capture anchors and post-processing
+
+The real-HotSpot capture defines two different classfiles with the same binary name, `hprof.loader.Duplicate`. Definition 1 implements `definitionMarker() == 111`; definition 2 implements `definitionMarker() == 222`. The exact byte arrays passed to `ClassLoader.defineClass` are written immediately as external artifacts. The custom loaders intentionally retain no bytecode field, so artifact availability does not depend on incidental loader heap state.
+
+Reachable capture-only tags correlate identities that ordinary Java cannot know before a dump assigns HPROF IDs:
+
+~~~text
+LoaderTag(logicalLoaderId, loader reference)
+ClassTag(logicalClassId, logicalLoaderId, loader reference)
+~~~
+
+After capture, `HprofCheckpointBundleBuilder` parses the HPROF with HAHA, locates the tags, follows each loader reference to its exact `Instance.getId()`, and resolves `loader Instance identity + hprof/loader/Duplicate` to the exact `ClassObj.getId()`. The two loader IDs and two class IDs are distinct. HPROF IDs are recorded only after dump generation and remain capture-local.
+
+### Experimental bundle V1
+
+The generated, build-owned layout is:
+
+~~~text
+build/hprof-smoke/class-loader-checkpoint/
+  heap.hprof
+  bundle.properties
+  classes/
+    class-1.class
+    class-2.class
+~~~
+
+The manifest records `bundle.version=1`, the relative HPROF path and SHA-256, two logical-loader-to-HPROF-ID entries, and for each logical class its logical loader, exact binary name, HPROF ClassObj ID, relative artifact path, and SHA-256. Artifact paths must be relative, normalize inside the bundle root, and identify regular files. Hash mismatch fails closed.
+
+A representative run produced distinct class hashes:
+
+~~~text
+class 1: 273680deeb5cef869fedd13863cf3a2c7f5533686a872f150d41e0d9fd65efdc
+class 2: f2b0a84a0c48251c025180e6fc49a8969b2656fe08dc31ceee01fd9ac6fa2397
+~~~
+
+Both artifacts are valid executable classfiles because HotSpot defines and invokes them during capture, and the modeled JPF probe independently defines the packaged bytes under two modeled loaders and observes `{111,222}`. A negative control flips one artifact byte and verifies rejection by SHA-256 before class definition. The bundle verifier also reopens the exact HPROF, checks every recorded ClassObj exists, and verifies its name and defining-loader relationship.
+
+The two supplemental channels remain distinct:
+
+- lifecycle metadata V1 supplies semantic `INITIALIZED`/`UNINITIALIZED` state absent from standard HPROF;
+- checkpoint class-definition artifacts supply exact executable bytes absent from standard HPROF.
+
+Neither schema was merged or changed. This bundle layout is an experimental prototype, not metadata V2 or a final archive format.
+
+The durable regression is:
+
+~~~bash
+./gradlew hprofCheckpointBundleTest --no-daemon
+~~~
+
+It performs the real-HotSpot capture, HAHA post-processing, integrity and semantic validation, one expected tamper rejection, and a separate RunJPF packaged-byte execution probe. It is included in `hprofRegressionTest`.
+
+This solves exact captured definition availability and bundle correlation, not generic loader replay. Ordinary loader fields remain distinct from executable loader capability: open JARs, URLs, remote resources, native handles, future resource lookup, and arbitrary custom-loader behavior remain unsupported. A future loader-aware importer can consume the demonstrated semantic identity:
+
+~~~text
+bundle-local loader identity + binary class name
+  -> captured loader HPROF ID + ClassObj HPROF ID + exact classfile artifact
+~~~
+
+but H.3 deliberately does not create the `HPROF loader -> ClassLoaderInfo` or `ClassObj -> ClassInfo` mappings.

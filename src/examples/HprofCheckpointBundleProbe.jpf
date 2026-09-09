@@ -1,0 +1,3 @@
+target=HprofCheckpointBundleProbe
+
+listener=gov.nasa.jpf.vm.hprof.HprofJpfClassLoaderProbeListener
