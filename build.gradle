@@ -1229,6 +1229,66 @@ tasks.register('hprofCheckpointMetadataTest') {
     }
 }
 
+// HPROF/HAHA loader-qualified class identity characterization.
+def hprofClassLoaderIdentityDump =
+        file("${hprofSmokeDir}/hprof-class-loader-identity.hprof")
+def hprofClassLoaderIdentityOutput = new ByteArrayOutputStream()
+
+tasks.register('generateHprofClassLoaderIdentityDump', JavaExec) {
+    group = "verification"
+    description = "Captures same-named classes defined by two real HotSpot class loaders."
+    dependsOn compileExamplesJava
+    classpath = files(sourceSets.examples.output)
+    mainClass = 'HprofClassLoaderIdentityDumpGenerator'
+    args hprofClassLoaderIdentityDump.absolutePath
+    outputs.file(hprofClassLoaderIdentityDump)
+    outputs.upToDateWhen { false }
+    doFirst {
+        hprofSmokeDir.mkdirs()
+        delete hprofClassLoaderIdentityDump
+    }
+    doLast {
+        if (!hprofClassLoaderIdentityDump.isFile() || hprofClassLoaderIdentityDump.length() == 0) {
+            throw new GradleException(
+                    "HotSpot generator did not produce loader-identity HPROF: ${hprofClassLoaderIdentityDump}")
+        }
+    }
+}
+
+tasks.register('hprofClassLoaderIdentityTest', JavaExec) {
+    group = "verification"
+    description = "Characterizes loader-qualified class identity in HPROF, HAHA, and HprofView."
+    dependsOn compileJava
+    dependsOn copyRuntimeLibs
+    dependsOn generateHprofClassLoaderIdentityDump
+    classpath = files(sourceSets.main.output, configurations.runtimeClasspath)
+    mainClass = 'gov.nasa.jpf.vm.hprof.HprofClassLoaderIdentityCharacterizer'
+    args hprofClassLoaderIdentityDump.absolutePath
+    standardOutput = hprofClassLoaderIdentityOutput
+    outputs.upToDateWhen { false }
+    doFirst {
+        if (!hprofClassLoaderIdentityDump.isFile() || hprofClassLoaderIdentityDump.length() == 0) {
+            throw new GradleException(
+                    "Class-loader identity HPROF is missing or empty: ${hprofClassLoaderIdentityDump}")
+        }
+        hprofClassLoaderIdentityOutput.reset()
+    }
+    doLast {
+        String output = hprofClassLoaderIdentityOutput.toString('UTF-8')
+        print output
+        ['[HPROF-JPF] HAHA same-name lookup: findClasses=2 findClass=null(ambiguous)',
+         '[HPROF-JPF] HprofView loader identity: class-id index preserved both; no name index collision',
+         '[HPROF-JPF] instance/class/loader association verified: markers={111,222}',
+         '[HPROF-JPF] loader-qualified identity characterization result: CASE_A'].each { diagnostic ->
+            if (!output.contains(diagnostic)) {
+                throw new GradleException(
+                        "Class-loader identity characterization missing diagnostic: ${diagnostic}")
+            }
+        }
+        println 'HPROF class-loader identity characterization passed'
+    }
+}
+
 tasks.register('hprofRegressionTest') {
     group = "verification"
     description = "Runs all durable HPROF -> JPF regressions."
@@ -1243,4 +1303,5 @@ tasks.register('hprofRegressionTest') {
     dependsOn hprofClassInitTest
     dependsOn hprofClassLifecycleTest
     dependsOn hprofCheckpointMetadataTest
+    dependsOn hprofClassLoaderIdentityTest
 }

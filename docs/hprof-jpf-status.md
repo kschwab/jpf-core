@@ -48,6 +48,12 @@ Supplemental class-lifecycle metadata regression:
 ./gradlew hprofClassLifecycleTest --no-daemon
 ~~~
 
+Class-loader identity characterization:
+
+~~~bash
+./gradlew hprofClassLoaderIdentityTest --no-daemon
+~~~
+
 All HPROF regressions:
 
 ~~~bash
@@ -169,6 +175,15 @@ Currently supported within selected classes includes all eight Java primitive sc
 | HPROF GC roots | unsupported |
 | `String` | unsupported |
 | multiple class loaders | unsupported |
+| HPROF class-loader identity | verified |
+| HAHA loader-qualified `ClassObj` identity | verified |
+| same-name classes from different loaders | characterized |
+| instance -> loader-qualified class association | verified |
+| JPF multiple loader-qualified `ClassInfo` | characterized from local APIs |
+| importer loader-aware class resolution | unsupported |
+| loader-qualified static reconstruction | unsupported |
+| loader-qualified lifecycle metadata | unsupported in V1 |
+| custom loader object/state reconstruction | unsupported |
 | thread state | deferred |
 | stack frames / program counters | deferred |
 | monitors | deferred |
@@ -885,3 +900,46 @@ The existing `hprofClassLifecycleTest` remains the positive behavioral regressio
 One launcher behavior matters for the negative checks: this checkout's `RunJPF` process can exit zero after a listener initialization exception. The semantic tasks therefore capture the combined process output and require both JPF's `[SEVERE] JPF exception` marker and the expected specific cause. Missing either fails Gradle. Parser failures use direct JUnit exception assertions and do not launch JPF.
 
 G.4 changes neither metadata V1 nor reconstruction coverage. `INITIALIZING`, initializing-thread identity, initialization failure, loader-qualified identity, and multi-loader lifecycle remain unsupported.
+
+## Pass H.1 — Loader-Qualified Class Identity
+
+H.1 is a characterization result: **CASE A**. Standard HPROF preserves the defining class-loader object ID for each class dump, HAHA preserves and exposes the distinction, and JPF can represent same-named classes under distinct `ClassLoaderInfo` objects. The current importer and checkpoint schema do not yet use that information. This is an importer/schema limitation, not an HPROF information gap.
+
+### Current name-only assumptions
+
+- `hprof.classes` and `hprof.static_classes` are sets of unqualified class-name strings.
+- `JpfHeapImporter` selects ordinary instances and static `ClassObj` records by `ClassObj.getClassName()` alone. Two matching ordinary definitions would both be allocated using `ClassLoaderInfo.getSystemResolvedClassInfo(name)`, collapsing their JPF class identity. Static selection explicitly requires exactly one matching `ClassObj` and therefore rejects duplicate definitions.
+- Object allocation, declaring-class resolution for inherited/hidden fields, static `FieldInfo` resolution, and static-array component resolution all use the system loader by name.
+- `HprofCheckpointMetadata` V1 stores lifecycle in `Map<String,ClassLifecycle>` and uses `class.<binary-name>` keys, so it cannot contain two lifecycle entries for the same name under different loaders.
+- `HprofHeapBootstrap` parses both class-selection properties into name-only sets. Test root binding and fixture validators locate source instances/classes by name and resolve modeled holder/field classes through the system loader.
+
+### HPROF and HAHA capability
+
+The standard `CLASS_DUMP` record contains, in order relevant here, the class object ID, superclass object ID, and defining class-loader object ID. HAHA 2.0.4's `HprofParser.loadClassDump()` reads the loader ID and calls `ClassObj.setClassLoaderId(long)`. `ClassObj` stores it internally as `mClassLoaderId`; there is no public raw-ID getter. Public `ClassObj.getClassLoader()` resolves that ID through `Snapshot.findInstance(long)` and returns the exact loader `Instance`. Bootstrap-loaded classes therefore resolve ID zero to `null`; both custom loaders in the H.1 capture resolve to non-null `ClassInstance` objects. This association survives `resolveClasses()` and `resolveReferences()`.
+
+HAHA indexes classes by HPROF class ID and by a name multimap. `Snapshot.findClasses(name)` returns both duplicate definitions; singular `Snapshot.findClass(name)` returns `null` when a heap contains more than one match, explicitly exposing ambiguity instead of choosing one. For this custom-defined packaged class, HAHA reports the class name in internal slash form `hprof/loader/Duplicate`, while the Java binary name used by `Class.forName` is `hprof.loader.Duplicate`.
+
+The durable HotSpot fixture defines the same `hprof.loader.Duplicate` bytecode independently through two parentless custom loaders. The retained instances have `marker=111` and `marker=222`. A representative successful capture reported:
+
+~~~text
+classHPROF=0x70ae42528 loaderHPROF=0x70ae41c98 instanceHPROF=0x70ae42b48 marker=111
+classHPROF=0x70ae42e20 loaderHPROF=0x70ae42080 instanceHPROF=0x70ae43020 marker=222
+~~~
+
+The IDs differ on every generated dump and are diagnostic identities, not durable checkpoint keys. For both instances, `ClassInstance.getClassObj()` returns the exact corresponding `ClassObj`, and that object's `getClassLoader()` returns the correct distinct loader. `HprofView` uses `Map<Long,ClassObj>` and `Map<Long,Instance>`, so it preserves both definitions and instances without a name-key collision. It intentionally has no convenience name index.
+
+### JPF capability and current boundary
+
+Each JPF `ClassLoaderInfo` owns its own `resolvedClasses: Map<String,ClassInfo>`. `getResolvedClassInfo(name)` resolves in that loader; `getResolvedClassInfo(name, byte[], offset, length)` creates a definition from loader-supplied bytes. When a class sourced from the same classpath URL is resolved by another loader, JPF clones the `ClassInfo` for that loader. `ClassInfo.getClassLoaderInfo()` identifies its defining loader, and its `uniqueId` combines the `ClassLoaderInfo` ID with the per-loader class/static ID. Thus JPF can represent two `ClassInfo` objects with one binary name under two loaders.
+
+A non-system `ClassLoaderInfo` requires a modeled `java.lang.ClassLoader` object. Its native peer constructs the host-side `ClassLoaderInfo`, links its modeled parent and numeric ID, and registers it with the VM. Modeled `defineClass` supplies class bytes to the loader-specific resolution API and registers the resulting class. Reconstructing that loader object, parent graph, bytecode source, and definition state is deliberately outside H.1.
+
+Consequently a future loader-aware importer needs a stable checkpoint class identity that includes defining-loader identity plus class name, and a mapping from captured loader identity to modeled `ClassLoaderInfo`. Raw HPROF loader object IDs establish identity inside one dump but are not yet accepted as a durable cross-artifact schema. Metadata V1 remains unchanged and intentionally assumes name uniqueness in the system/default modeled loader.
+
+The focused regression is:
+
+~~~bash
+./gradlew hprofClassLoaderIdentityTest --no-daemon
+~~~
+
+It generates `build/hprof-smoke/hprof-class-loader-identity.hprof` in a real HotSpot process, parses it with production HAHA/HprofView code, and verifies two class IDs, two loader IDs, two instance IDs, exact instance-to-class-to-loader association, name-lookup ambiguity, and preservation by HprofView. It does not import the duplicate classes into JPF and does not change reconstruction semantics.
