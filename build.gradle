@@ -1595,6 +1595,41 @@ tasks.register('hprofLoaderHierarchyImportTest') {
     doLast { println 'HPROF loader-qualified hierarchy reconstruction regression passed' }
 }
 
+// HPROF root-taxonomy characterization (I.1).
+def hprofRootCharacterizationFile = file("${hprofSmokeDir}/hprof-root-characterization.hprof")
+def hprofRootCharacterizationOutput = new ByteArrayOutputStream()
+
+tasks.register('generateHprofRootCharacterizationDump', JavaExec) {
+    group = "verification"
+    description = "Captures controlled static, Java-local, thread, and monitor roots under HotSpot."
+    dependsOn compileExamplesJava
+    classpath = files(sourceSets.examples.output)
+    mainClass = 'HprofRootCharacterizationDumpGenerator'
+    args hprofRootCharacterizationFile.absolutePath
+    outputs.upToDateWhen { false }
+    doFirst { hprofSmokeDir.mkdirs(); delete hprofRootCharacterizationFile }
+    doLast { if (!hprofRootCharacterizationFile.isFile() || hprofRootCharacterizationFile.length()==0) throw new GradleException('Root characterization HPROF missing') }
+}
+
+tasks.register('hprofRootCharacterizationTest', JavaExec) {
+    group = "verification"
+    description = "Characterizes HAHA provenance for controlled HPROF GC-root records."
+    dependsOn compileJava
+    dependsOn copyRuntimeLibs
+    dependsOn generateHprofRootCharacterizationDump
+    classpath = files(sourceSets.main.output, configurations.runtimeClasspath)
+    mainClass = 'gov.nasa.jpf.vm.hprof.HprofRootCharacterizer'
+    args hprofRootCharacterizationFile.absolutePath
+    standardOutput = hprofRootCharacterizationOutput
+    outputs.upToDateWhen { false }
+    doFirst { hprofRootCharacterizationOutput.reset() }
+    doLast {
+        String output=hprofRootCharacterizationOutput.toString('UTF-8'); print output
+        if(!output.contains('[HPROF-JPF] root characterization verified: staticField=true javaLocal=true monitorRecord=false threadObjectParserLoss=true')) throw new GradleException('Root characterization diagnostic missing')
+        println 'HPROF GC-root characterization regression passed'
+    }
+}
+
 tasks.register('hprofRegressionTest') {
     group = "verification"
     description = "Runs all durable HPROF -> JPF regressions."
@@ -1614,4 +1649,5 @@ tasks.register('hprofRegressionTest') {
     dependsOn hprofCheckpointBundleTest
     dependsOn hprofLoaderQualifiedImportTest
     dependsOn hprofLoaderHierarchyImportTest
+    dependsOn hprofRootCharacterizationTest
 }

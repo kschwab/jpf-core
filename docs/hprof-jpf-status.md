@@ -191,6 +191,16 @@ Currently supported within selected classes includes all eight Java primitive sc
 | class with `<clinit>` | unsupported |
 | class-initialization state restoration | deferred |
 | HPROF GC roots | unsupported |
+| HPROF root taxonomy | characterized |
+| HPROF root provenance through HAHA | partial; category/object retained, associated metadata partly hidden/lost |
+| static-field root semantics | verified through `StaticElementInfo` |
+| Java-frame/local root liveness | characterized |
+| Java-frame/local root semantics | blocked on thread/frame reconstruction |
+| thread-object root provenance | parser loss in HAHA public root collection |
+| thread-object root semantics | blocked on `ThreadInfo` reconstruction |
+| monitor-root liveness | uncharacterized on controlled HotSpot capture; record not emitted |
+| monitor-root semantics | blocked on monitor/thread reconstruction |
+| JNI/native root semantics | blocked on native/thread state; parser metadata loss |
 | `String` | unsupported |
 | multiple class loaders | verified for bounded checkpoint-bundle reconstruction |
 | HPROF class-loader identity | verified |
@@ -1309,3 +1319,102 @@ The focused task is:
 It creates a fresh build-owned bundle, correlates one loader and three ClassObjs, imports the instance, checks exact hierarchy identity, executes the modeled methods, and requires `no errors detected`. Its negative control copies the bundle without Contract and requires the precise `missing bundled custom interface ...` failure before any system fallback. This checkout's RunJPF reports listener-initialization failure with process status zero, so that expected-failure control keys on the explicit severe diagnostic; successful execution remains guarded by both modeled success output and `no errors detected`.
 
 H.5 remains bounded to parentless captured loaders, explicitly bundled dependency sets, a system/bootstrap `java.lang.Object` boundary, ordinary instances, and no custom-type arrays. Non-null custom loader parents, loader-qualified statics/lifecycle, object arrays of loader-qualified components, arbitrary loader capability replay, and future dynamic loading remain unsupported or deferred.
+
+
+## Pass I.1 — HPROF GC-Root Taxonomy and JPF Root Mapping
+
+I.1 characterizes root records separately from object-graph reconstruction. It adds no generic keepalive set and no new importer semantics: preventing collection without reconstructing the runtime structure that owns a root would prove liveness only, not continuation semantics.
+
+### HAHA 2.0.4 root parser inventory
+
+The actual `HprofParser.loadHeapDump` switch supports these record tags. `id` below is the referenced object ID; `u4` fields are four-byte unsigned/serial values in the format even though HAHA reads them through `readInt()`.
+
+| HPROF record/tag | Record payload parsed | HAHA representation | Provenance retained publicly? |
+|---|---|---|---|
+| `ROOT_UNKNOWN` (`0xff`) | object `id` | `RootObj(UNKNOWN,id)` | category and object |
+| `ROOT_JNI_GLOBAL` (`0x01`) | object `id`, JNI-global-ref `id` | `RootObj(NATIVE_STATIC,id)` | category/object; second native ID discarded |
+| `ROOT_JNI_LOCAL` (`0x02`) | object `id`, thread serial `u4`, frame number `u4` | `RootObj(NATIVE_LOCAL,id,thread,stack-at-depth)` | category/object public; thread/stack stored without public getters; original frame number not exposed |
+| `ROOT_JAVA_FRAME` (`0x03`) | object `id`, thread serial `u4`, frame number `u4` | `RootObj(JAVA_LOCAL,id,thread,stack-at-depth)` | same partial exposure |
+| `ROOT_NATIVE_STACK` (`0x04`) | object `id`, thread serial `u4` | `RootObj(NATIVE_STACK,id,thread,thread-stack-trace)` | same partial exposure |
+| `ROOT_STICKY_CLASS` (`0x05`) | class-object `id` | `RootObj(SYSTEM_CLASS,id)` | category and exact `ClassObj` |
+| `ROOT_THREAD_BLOCK` (`0x06`) | object `id`, thread serial `u4` | `RootObj(THREAD_BLOCK,id,thread,thread-stack-trace)` | category/object public; thread/trace hidden |
+| `ROOT_MONITOR_USED` (`0x07`) | object `id` | `RootObj(BUSY_MONITOR,id)` | category and object; record carries no owner |
+| `ROOT_THREAD_OBJECT` (`0x08`) | thread object `id`, thread serial `u4`, stack-trace serial `u4` | internal `ThreadObj(id,stackTrace)` keyed by thread serial | **not added to `Snapshot.getGCRoots()`; no public `ThreadObj` getters** |
+| `ROOT_INTERNED_STRING` (`0x89`) | object `id` | `RootObj(INTERNED_STRING,id)` | category and object |
+| `ROOT_FINALIZING` (`0x8a`) | object `id` | `RootObj(FINALIZING,id)` | category and object |
+| `ROOT_DEBUGGER` (`0x8b`) | object `id` | `RootObj(DEBUGGER,id)` | category and object |
+| `ROOT_REFERENCE_CLEANUP` (`0x8c`) | object `id` | `RootObj(REFERENCE_CLEANUP,id)` | category and object |
+| `ROOT_VM_INTERNAL` (`0x8d`) | object `id` | `RootObj(VM_INTERNAL,id)` | category and object |
+| `ROOT_JNI_MONITOR` (`0x8e`) | object `id`, thread serial `u4`, stack depth `u4` | `RootObj(NATIVE_MONITOR,id,thread,stack-at-depth)` | category/object public; thread/stack hidden |
+| `ROOT_UNREACHABLE` (`0x90`) | object `id` | `RootObj(UNREACHABLE,id)` | category and object |
+
+HAHA's `RootType.INVALID_TYPE` and `JAVA_STATIC` enum values are not produced by this parser switch. Java static field targets are not emitted as individual `ROOT_JAVA_STATIC` records by this format path; `ROOT_STICKY_CLASS` roots a class, while its `CLASS_DUMP` contains the static values.
+
+`Snapshot.getGCRoots()` therefore retains root category and referenced identity for `RootObj` records, and `RootObj.getReferredInstance()` resolves the identity. It does not provide the complete record provenance. `RootObj.mThread`, inherited `Instance.mStack`, `ThreadObj` fields, and `StackTrace` metadata are package-private/protected with no public getters. In addition to hidden metadata, JNI-global's native reference ID is discarded and thread-object records are omitted from the public root collection. These are HAHA/parser API losses, not HPROF information gaps.
+
+### Controlled HotSpot characterization
+
+`HprofRootCharacterizationDumpGenerator` creates three marker objects:
+
+~~~text
+kind=1 -> static field HprofRootCharacterizationDumpGenerator.staticMarker
+kind=2 -> live worker Java local
+kind=3 -> live worker Java local used as an owned synchronized monitor
+worker  -> live java.lang.Thread object
+~~~
+
+The worker remains inside `synchronized(monitor)` with both locals live while the main thread captures a build-owned HPROF. The regression searches by marker identity rather than asserting global root counts. Across fresh captures it observed:
+
+~~~text
+static marker -> captured static field identity; no direct RootObj
+Java local    -> JAVA_LOCAL
+monitor       -> JAVA_LOCAL only; no BUSY_MONITOR record from this HotSpot capture
+Thread object -> another JAVA_LOCAL reference visible, but THREAD_OBJECT provenance absent from getGCRoots()
+~~~
+
+A representative category count was `{SYSTEM_CLASS=681, NATIVE_LOCAL=1, NATIVE_STATIC=43, JAVA_LOCAL=24}`. Counts are diagnostic only and intentionally not regression assertions. A Java synchronized block is therefore insufficient to deterministically induce `ROOT_MONITOR_USED` in this HotSpot configuration; monitor-root occurrence remains uncharacterized rather than being synthesized.
+
+### JPF semantic mapping
+
+JPF `GenericHeap.mark()` marks `pinDownList`, then `ThreadList.markRoots`, then `ClassLoaderList.markRoots`, and recursively traverses the resulting objects. The relevant mappings and boundaries are:
+
+| HPROF root category | JPF semantic structure | Liveness reconstructable now? | Semantics reconstructable now? | Missing prerequisite/status |
+|---|---|---:|---:|---|
+| sticky/system class | registered `ClassInfo`/`StaticElementInfo`; class object and reference statics marked by `markStaticRoot` | yes where class/static state is reconstructed | yes for verified no-`<clinit>`/metadata-supported static cases | generic Class-object/root selection still bounded |
+| static field target | `StaticElementInfo` reference slot, reached via `ClassLoaderList -> Statics.markRoots` | verified | verified | G.1; do not duplicate with root table |
+| Java frame/local | reference-typed `StackFrame` local or operand slot, marked through `ThreadInfo.markRoots` | only by synthetic pin/root | no | ThreadInfo, frame chain, slots, reference bitmap, PC |
+| thread object | `ThreadInfo.objRef`, marked by `ThreadInfo.markRoots` | only by synthetic pin/root | no | ThreadInfo lifecycle/scheduler state; ordinary Thread object is insufficient |
+| JNI local/native stack | `NativeStackFrame`/thread roots where a peer frame retains references | only approximation | no | native peer frame plus owning thread; HAHA hides thread/trace metadata |
+| JNI global | no reconstructed JNI-global table was found; `GenericHeap.pinDown` can preserve liveness | approximation possible | no | native/MJI global-reference ownership; HAHA discards native reference ID |
+| thread block | ThreadInfo target/lock/block execution state | approximation possible | no | owning thread and block state; HAHA hides thread metadata |
+| monitor used/JNI monitor | `ElementInfo.Monitor` plus owning/waiting/blocked `ThreadInfo` relationships | approximation possible | no | monitor ownership/count/wait sets and threads; basic record lacks owner |
+| interned string | heap intern table/pinned implementation plus String semantics | not currently | no | String reconstruction and intern-table state |
+| finalizing | JPF finalizer queue/`FinalizerThreadInfo` | approximation possible | no | finalization queue and thread state |
+| reference cleanup | weak/reference processing state | approximation possible | no | reference-handler/queue semantics |
+| debugger, VM internal, unknown, unreachable | no portable one-to-one continuation structure established | approximation possible | no | producer/runtime-specific meaning or insufficient semantic provenance |
+
+`GenericHeap.pinDown` is a real JPF liveness mechanism, but using it for all imported HPROF roots would erase ownership and lifecycle semantics. I.1 deliberately does not do that.
+
+### Result and regression
+
+The focused durable command is:
+
+~~~bash
+./gradlew hprofRootCharacterizationTest --no-daemon
+~~~
+
+It regenerates `build/hprof-smoke/hprof-root-characterization.hprof` in a real HotSpot process and verifies stable object-specific findings without depending on VM-wide counts. No HPROF root category gained new importer support in I.1. Static root semantics remain the already verified G.1 implementation; non-static semantic roots are blocked principally by execution-state reconstruction, not by object identity.
+
+The research implication is a firm split:
+
+~~~text
+heap state:
+  objects + arrays + fields + statics + root records
+
+execution state that gives roots meaning:
+  threads + frames + locals/operands + PCs + monitors + native ownership
+~~~
+
+HPROF root records identify many live objects and sometimes carry thread/frame correlation data, so they expose where continuation state is needed. They do not by themselves instantiate the corresponding JPF runtime structures, and HAHA 2.0.4 further hides or discards part of that provenance.
+
+Loader-qualified object arrays remain an explicit unverified coverage item; loader-specific expansion is intentionally paused. Lifecycle metadata V1 and checkpoint bundle V1 are unchanged.
