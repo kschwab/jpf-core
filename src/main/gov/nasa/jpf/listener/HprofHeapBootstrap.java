@@ -6,6 +6,8 @@ import gov.nasa.jpf.JPF;
 import gov.nasa.jpf.JPFConfigException;
 import gov.nasa.jpf.ListenerAdapter;
 import gov.nasa.jpf.vm.MJIEnv;
+import gov.nasa.jpf.vm.Instruction;
+import gov.nasa.jpf.vm.ThreadInfo;
 import gov.nasa.jpf.vm.VM;
 import gov.nasa.jpf.vm.hprof.HprofCheckpointMetadata;
 import gov.nasa.jpf.vm.hprof.HprofCheckpointBundle;
@@ -13,6 +15,8 @@ import gov.nasa.jpf.vm.hprof.HprofLoaderImportContext;
 import gov.nasa.jpf.vm.hprof.HprofLoaderQualifiedValidator;
 import gov.nasa.jpf.vm.hprof.HprofLoaderHierarchyValidator;
 import gov.nasa.jpf.vm.hprof.HprofGraphIdentityValidator;
+import gov.nasa.jpf.vm.hprof.HprofExecutionCheckpoint;
+import gov.nasa.jpf.vm.hprof.HprofFrameStateRestorer;
 import gov.nasa.jpf.vm.hprof.HprofPassASmokeGcVerifier;
 import gov.nasa.jpf.vm.hprof.HprofPassASmokeRootBinder;
 import gov.nasa.jpf.vm.hprof.HprofPassASmokeValidator;
@@ -37,6 +41,8 @@ public class HprofHeapBootstrap extends ListenerAdapter {
   private final Set<String> selectedClasses;
   private final Set<String> selectedStaticClasses;
   private final HprofCheckpointMetadata checkpointMetadata;
+  private final HprofExecutionCheckpoint executionCheckpoint;
+  private HprofFrameStateRestorer frameStateRestorer;
   private final boolean smokeBindRoot;
   private final boolean smokeValidate;
   private final boolean smokeGcValidate;
@@ -110,6 +116,16 @@ public class HprofHeapBootstrap extends ListenerAdapter {
             "invalid hprof.lifecycle_file: " + lifecycleFile.getAbsolutePath(), ex);
       }
     }
+    String executionPath = conf.getString("hprof.execution_file");
+    if (executionPath == null || executionPath.trim().isEmpty()) {
+      executionCheckpoint = null;
+    } else {
+      try {
+        executionCheckpoint = HprofExecutionCheckpoint.load(new File(executionPath));
+      } catch (Exception ex) {
+        throw new JPFConfigException("invalid hprof.execution_file: " + executionPath, ex);
+      }
+    }
     smokeBindRoot = conf.getBoolean("hprof.smoke_bind_root", false);
     smokeValidate = conf.getBoolean("hprof.smoke_validate", false);
     smokeGcValidate = conf.getBoolean("hprof.smoke_gc_validate", false);
@@ -176,6 +192,9 @@ public class HprofHeapBootstrap extends ListenerAdapter {
               vm, view, result, testRootRef);
         }
       }
+      if (executionCheckpoint != null) {
+        frameStateRestorer = new HprofFrameStateRestorer(vm, executionCheckpoint, result);
+      }
       if (testSupport != null) {
         testSupport.initialize(vm, view, result, testRootRef);
       }
@@ -216,4 +235,22 @@ public class HprofHeapBootstrap extends ListenerAdapter {
   private static int nonEmpty(String value) {
     return value != null && !value.trim().isEmpty() ? 1 : 0;
   }
+
+  @Override
+  public void threadStarted(VM vm, ThreadInfo startedThread) {
+    if (frameStateRestorer != null) frameStateRestorer.threadStarted(vm, startedThread);
+  }
+
+  @Override
+  public void executeInstruction(VM vm, ThreadInfo currentThread, Instruction instruction) {
+    if (frameStateRestorer != null) {
+      frameStateRestorer.executeInstruction(currentThread, instruction);
+    }
+  }
+
+  @Override
+  public void threadTerminated(VM vm, ThreadInfo terminatedThread) {
+    if (frameStateRestorer != null) frameStateRestorer.threadTerminated(terminatedThread);
+  }
+
 }

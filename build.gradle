@@ -1630,6 +1630,53 @@ tasks.register('hprofRootCharacterizationTest', JavaExec) {
     }
 }
 
+// Minimum Java ThreadInfo/StackFrame checkpoint restoration (I.2).
+def hprofFrameStateFile = file("${hprofSmokeDir}/hprof-frame-state.hprof")
+def hprofFrameExecutionFile = file("${hprofSmokeDir}/hprof-frame-state-execution.properties")
+def hprofFrameMetadataOutput = new ByteArrayOutputStream()
+def hprofFrameRunOutput = new ByteArrayOutputStream()
+def hprofFrameConfig = file("${projectDir}/src/examples/HprofFrameState.jpf")
+
+tasks.register('generateHprofFrameStateDump', JavaExec) {
+    group = "verification"; description = "Captures the object referenced by a live Java checkpoint frame."
+    dependsOn compileExamplesJava; classpath = files(sourceSets.examples.output)
+    mainClass = 'HprofFrameStateDumpGenerator'; args hprofFrameStateFile.absolutePath
+    outputs.upToDateWhen { false }
+    doFirst { hprofSmokeDir.mkdirs(); delete hprofFrameStateFile; delete hprofFrameExecutionFile }
+}
+
+tasks.register('buildHprofFrameExecutionMetadata', JavaExec) {
+    group = "verification"; description = "Builds synthetic exact execution metadata correlated to the captured object."
+    dependsOn compileJava; dependsOn copyRuntimeLibs; dependsOn generateHprofFrameStateDump
+    classpath = files(sourceSets.main.output, configurations.runtimeClasspath)
+    mainClass = 'gov.nasa.jpf.vm.hprof.HprofFrameStateMetadataBuilder'
+    args hprofFrameStateFile.absolutePath, hprofFrameExecutionFile.absolutePath
+    standardOutput = hprofFrameMetadataOutput; outputs.upToDateWhen { false }
+    doFirst { hprofFrameMetadataOutput.reset() }
+    doLast { String output=hprofFrameMetadataOutput.toString('UTF-8'); print output; if(!output.contains('pc=22')||!hprofFrameExecutionFile.isFile())throw new GradleException('Frame execution metadata missing') }
+}
+
+tasks.register('runHprofFrameStateJpf', Exec) {
+    group = "verification"; description = "Installs and resumes one supplied Java StackFrame in a real modeled thread."
+    dependsOn buildJars; dependsOn buildHprofFrameExecutionMetadata
+    outputs.upToDateWhen { false }
+    doFirst {
+        hprofFrameRunOutput.reset()
+        commandLine "${System.getProperty('java.home')}/bin/java", '-cp', "${buildDir}/RunJPF.jar${File.pathSeparator}${buildDir}/deps/*", 'gov.nasa.jpf.tool.RunJPF', "+hprof.file=${hprofFrameStateFile.absolutePath}", "+hprof.execution_file=${hprofFrameExecutionFile.absolutePath}", hprofFrameConfig.absolutePath
+        standardOutput=hprofFrameRunOutput; errorOutput=hprofFrameRunOutput
+    }
+    doLast {
+        String output=hprofFrameRunOutput.toString('UTF-8'); print output
+        ['[HPROF-JPF] reconstructed JAVA_FRAME root survived GC through ThreadList -> ThreadInfo -> StackFrame', '[HPROF-JPF] restored PC first instruction verified: offset=22', '[HPROF-JPF-MODEL] reconstructed frame continuation verified: preCounter=1 result=22 continuationCounter=1', 'no errors detected'].each { d -> if(!output.contains(d))throw new GradleException("Frame-state regression missing: ${d}") }
+    }
+}
+
+tasks.register('hprofFrameStateTest') {
+    group = "verification"; description = "Restores and resumes one minimal Java thread frame from supplemental execution metadata."
+    dependsOn runHprofFrameStateJpf
+    doLast { println 'HPROF minimum Java frame-state regression passed' }
+}
+
 tasks.register('hprofRegressionTest') {
     group = "verification"
     description = "Runs all durable HPROF -> JPF regressions."
@@ -1650,4 +1697,5 @@ tasks.register('hprofRegressionTest') {
     dependsOn hprofLoaderQualifiedImportTest
     dependsOn hprofLoaderHierarchyImportTest
     dependsOn hprofRootCharacterizationTest
+    dependsOn hprofFrameStateTest
 }

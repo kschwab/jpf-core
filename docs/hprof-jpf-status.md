@@ -195,7 +195,7 @@ Currently supported within selected classes includes all eight Java primitive sc
 | HPROF root provenance through HAHA | partial; category/object retained, associated metadata partly hidden/lost |
 | static-field root semantics | verified through `StaticElementInfo` |
 | Java-frame/local root liveness | characterized |
-| Java-frame/local root semantics | blocked on thread/frame reconstruction |
+| Java-frame/local root semantics | verified for one supplied RUNNING Java frame/local; general stacks deferred |
 | thread-object root provenance | parser loss in HAHA public root collection |
 | thread-object root semantics | blocked on `ThreadInfo` reconstruction |
 | monitor-root liveness | uncharacterized on controlled HotSpot capture; record not emitted |
@@ -248,8 +248,15 @@ Currently supported within selected classes includes all eight Java primitive sc
 | generic loader parents | unsupported |
 | loader-qualified object arrays | deferred |
 | future dynamic custom loading | unsupported |
-| thread state | deferred |
-| stack frames / program counters | deferred |
+| one `RUNNING` modeled thread | verified from supplied execution metadata |
+| one Java frame with empty operand stack | verified from supplied execution metadata |
+| primitive/reference local slots and reference mask | verified for int/reference locals |
+| exact bytecode PC continuation | verified from supplied bytecode offset |
+| semantic Java-frame GC root | verified for reconstructed reference local |
+| arbitrary operand stack | unsupported |
+| general frame chains / caller return state | unsupported |
+| pending exception state | unsupported |
+| thread state beyond `RUNNING` | unsupported |
 | monitors | deferred |
 
 Status meanings: **verified** has an end-to-end regression; **implemented but unverified** is supported by current code but lacked a dedicated proof when recorded; **unsupported** is rejected or not reconstructed; **deferred** is outside the current heap milestone.
@@ -1418,3 +1425,113 @@ execution state that gives roots meaning:
 HPROF root records identify many live objects and sometimes carry thread/frame correlation data, so they expose where continuation state is needed. They do not by themselves instantiate the corresponding JPF runtime structures, and HAHA 2.0.4 further hides or discards part of that provenance.
 
 Loader-qualified object arrays remain an explicit unverified coverage item; loader-specific expansion is intentionally paused. Lifecycle metadata V1 and checkpoint bundle V1 are unchanged.
+
+
+## Pass I.2 — Minimum Java Thread / Frame Checkpoint State
+
+I.2 separates capture feasibility from restoration feasibility. Standard HPROF is not an execution checkpoint, so the focused experiment supplies exact synthetic execution metadata while taking the referenced object identity from a real HotSpot dump. The result is **CASE A** for the bounded target question: when exact state for one static Java frame with an empty operand stack is supplied, JPF can install it through public APIs and resume at the selected bytecode instruction. Capturing all of that state remains separate work.
+
+### Concrete JPF execution representation
+
+A live modeled thread is a `ThreadInfo` registered in `ThreadList`, not merely a `java.lang.Thread` heap object. The local state enumeration is `NEW`, `RUNNING`, `BLOCKED`, `UNBLOCKED`, `WAITING`, `TIMEOUT_WAITING`, `NOTIFIED`, `INTERRUPTED`, `TIMEDOUT`, `TERMINATED`, and `SLEEPING`. `ThreadInfo` holds its modeled thread-object reference, target, state, pending exception, and linked frame chain. `ThreadInfo.markRoots` marks the thread object, target, pending exception, and every frame.
+
+A Java bytecode frame is a `JVMStackFrame` with an exact `MethodInfo`, an `Instruction pc`, a combined `int[] slots`, a `FixedBitSet isRef`, and optional slot/frame attributes. Locals occupy `0 .. maxLocals-1`; the operand area begins at `stackBase=maxLocals`; and `top=maxLocals-1` denotes an empty operand stack. Values use JVM slots:
+
+| Java value | JPF slot representation |
+|---|---|
+| `int`, byte/short/char/boolean categories | one 32-bit slot |
+| `float` | one slot containing raw IEEE-754 int bits |
+| reference | one slot containing the JPF ref plus its `isRef` bit |
+| `long` | two slots, high word then low word |
+| `double` | two slots containing raw IEEE-754 long bits |
+
+`setLocalVariable(index,value)` stores a primitive and clears reference-ness; `setLocalReferenceVariable(index,ref)` stores the same numeric slot form but sets `isRef`. Long/double helpers write two slots. Operand values use the same storage and reference bitmap above `stackBase`. Attributes are independent from the reference bitmap and are not required by this fixture. `StackFrame.markThreadRoots` scans reference-marked slots through `top`, which is why numeric values alone cannot constitute a faithful frame checkpoint.
+
+The PC is the next `Instruction` to execute. The restoration API is `StackFrame.setPC(Instruction)`; a durable checkpoint should identify it as loader-qualified declaring class, method name, JVM descriptor, and bytecode offset. The experiment resolves `ClassInfo.getMethod(methodName+descriptor,false)` and `MethodInfo.getInstructionAt(offset)`. A source line is not an exact PC.
+
+### Standard HPROF and HAHA boundary
+
+| Required execution component | Standard HPROF | HAHA 2.0.4 exposure |
+|---|---|---|
+| frame display identity | `STACK_FRAME`: frame ID, method-name string ID, method-signature string ID, source-file string ID, class serial, line number | parsed, but fields are package-private and public behavior is essentially formatting |
+| frame chain/thread correlation | `STACK_TRACE`: trace serial, thread serial, ordered frame IDs | parsed; useful fields are not public getters |
+| rooted local correlation | `ROOT_JAVA_FRAME`: object ID, thread serial, frame number | root category/object public; thread/stack association hidden |
+| thread-object correlation | `ROOT_THREAD_OBJECT`: object ID, thread serial, stack-trace serial | retained internally as `ThreadObj`, omitted from `getGCRoots()`, no public getters |
+| exact bytecode PC | absent; line number is not a bytecode offset | unavailable |
+| local slot values/layout | absent | unavailable |
+| operand-stack values/depth | absent | unavailable |
+| local/operand reference masks | absent | unavailable |
+| JPF thread status/scheduler state | absent as continuation state | unavailable |
+| pending exception and exact caller-return state | absent | unavailable |
+
+Thus HPROF supplies descriptive stack traces and root correlations, not resumable frames. HAHA additionally hides thread/frame correlation fields that HPROF does carry. It cannot expose state that the format never recorded.
+
+### Prototype metadata and restoration
+
+The separate experimental input is configured with:
+
+~~~properties
+hprof.execution_file=/path/to/frame-state-execution.properties
+~~~
+
+Its bounded V1 semantic shape is:
+
+~~~properties
+execution.version=1
+thread.1.logical_id=1
+thread.1.state=RUNNING
+frame.1.class=HprofFrameStateFixture
+frame.1.method=checkpointMethod
+frame.1.descriptor=()V
+frame.1.bytecode_offset=22
+frame.1.local_count=3
+frame.1.local.0=INT:5
+frame.1.local.1=REFERENCE_HPROF:0x<captured-marker-id>
+frame.1.local.2=INT:15
+~~~
+
+This is intentionally not lifecycle metadata V1 and is not claimed as a final execution-checkpoint schema. It supports one `RUNNING` thread, one system-loader static Java method, `INT` and `REFERENCE_HPROF` locals, and an empty operand stack.
+
+The real HotSpot fixture pauses in `checkpointMethod()V` after incrementing `preCounter`, with locals `a=5`, `ref=Marker(value=7)`, and `b=15`. The generator clears its temporary static Marker reference before dumping, so the Marker is found as a `JAVA_LOCAL` root. Post-processing obtains its actual HPROF ID and writes the synthetic exact locals and verified bytecode offset 22; it does not derive locals or PC from HPROF.
+
+The modeled target creates a normal `java.lang.Thread`. JPF's `Thread.start` path creates/registers its `ThreadInfo`, installs the normal direct-call thread-exit frame, sets `RUNNING`, and emits `threadStarted`. The listener then resolves exact `MethodInfo`/`Instruction`, creates a public `new JVMStackFrame(mi)` without consuming caller operands, writes typed locals/reference bits, sets PC 22, verifies the operand stack is empty, and pushes it with `ThreadInfo.pushFrame`. `ClassInfo.createStackFrame(ti,mi)` is deliberately not used: it is a call-site factory that consumes arguments from the caller operand stack, which is wrong for restoration.
+
+The imported Marker is pinned only between heap import and frame installation. The pin is released before deliberate GC. At the first restored instruction, GC preserves it solely through `ThreadList -> ThreadInfo -> JVMStackFrame.isRef local -> object`; the exact local JPF ref and reference bit are rechecked afterward.
+
+The first executed instruction is the exact `iload_2` object at bytecode offset 22. The earlier increment is not rerun: restored static `preCounter` remains 1. Modeled continuation computes `result=15+7=22`, increments `continuationCounter` once, returns through JPF's normal thread exit frame, and terminates. The durable signal is:
+
+~~~text
+[HPROF-JPF-MODEL] reconstructed frame continuation verified: preCounter=1 result=22 continuationCounter=1
+~~~
+
+The focused regression is `./gradlew hprofFrameStateTest --no-daemon`.
+
+### Capture channels and remaining limits
+
+The installed JDI API provides suspended-thread frame enumeration, `StackFrame.location()`, `Location.codeIndex()`, arguments, and visible-variable value access. Visible locals can fail with `AbsentInformationException`, depend on debug-variable metadata/scope, and do not expose arbitrary raw local slots or the operand stack. No general operand-stack capture API appears in the inspected JDI interfaces.
+
+JVMTI is the natural lower-level candidate for thread state, stack traces/frame locations, and typed local access, but the development image does not contain `jvmti.h`; no native-agent capability claim is made here. A later capture milestone must verify exact capabilities, suspension requirements, opaque/native-frame behavior, and availability of raw slot/reference information. Neither channel should be assumed to expose arbitrary operand-stack contents. HotSpot-specific mechanisms may expose more internal state but would be non-portable.
+
+I.2 does not restore arbitrary operand stacks, caller chains/return locations, instance receivers, long/double locals, pending exceptions, scheduler choices, blocked/waiting states, monitors, native/JNI frames, or custom-loader method identity. It proves JPF-side restoration feasibility for exact supplied minimal state, while standard HPROF remains insufficient as the capture source.
+
+### Execution-state coverage matrix
+
+| State component | Needed by JPF? | HPROF provides? | Supplemental capture required? | JPF restoration verified? | Capture candidate/status |
+|---|---:|---:|---:|---:|---|
+| thread identity / modeled thread object | yes | correlation only | yes | verified for one newly created modeled thread | JDI/JVMTI; synthetic in I.2 |
+| thread status | yes | no continuation status | yes | `RUNNING` only | JDI status or JVMTI state; other states deferred |
+| frame chain | yes | descriptive trace only | yes | one Java frame plus normal exit frame | JDI/JVMTI trace; general callers deferred |
+| loader-qualified declaring class | yes | class serial/name correlation | usually | system loader only | bundle identity needed for custom loaders |
+| method name + descriptor | yes | yes in `STACK_FRAME` | HAHA access workaround needed | verified from supplied metadata | HPROF parser/JDI/JVMTI |
+| exact bytecode PC | yes | no (line only) | yes | offset 22 verified | JDI `Location.codeIndex`; JVMTI candidate |
+| primitive local slots | yes | no | yes | `int` slots verified | JDI visible locals or JVMTI typed locals |
+| reference local slots | yes | rooted object correlation, not slot map | yes | exact imported ref verified | JDI/JVMTI plus HPROF-ID correlation |
+| local reference mask | yes for GC/type fidelity | no | yes | verified | must be derived from captured slot types |
+| operand slots/depth | yes when non-empty | no | yes | empty stack only | no general JDI API; capture gap |
+| operand reference mask | yes when non-empty | no | yes | empty stack only | capture gap |
+| pending exception | yes when present | no resumable state | yes | unsupported | later execution metadata |
+| return/caller state | yes for general stack | descriptive frames only | yes | bounded direct-call exit only | later frame-chain capture |
+| thread stack as GC root | yes | root record only | yes | verified semantically | reconstructed reference bitmap |
+| monitor/scheduler state | yes when blocked/waiting | incomplete/non-continuation | yes | unsupported | later thread/monitor milestone |
+
+Lifecycle metadata V1, checkpoint bundle V1, loader import semantics, and the intentionally deferred loader-qualified object-array coverage are unchanged.

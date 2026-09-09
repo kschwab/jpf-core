@@ -1,0 +1,5 @@
+target=HprofFrameStateTarget
+
+listener=gov.nasa.jpf.listener.HprofHeapBootstrap
+hprof.classes=HprofFrameStateFixture$Marker
+hprof.static_classes=HprofFrameStateFixture
