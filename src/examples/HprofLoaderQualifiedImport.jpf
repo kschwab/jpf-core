@@ -1,0 +1,4 @@
+target=HprofLoaderQualifiedTarget
+
+listener=gov.nasa.jpf.listener.HprofHeapBootstrap
+hprof.loader_qualified_validate=true

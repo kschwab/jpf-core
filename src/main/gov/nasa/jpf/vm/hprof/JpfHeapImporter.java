@@ -39,13 +39,20 @@ public final class JpfHeapImporter {
 
   public ImportResult importHeap(VM vm, HprofView view, Set<String> selectedClassNames,
       Set<String> selectedStaticClassNames, HprofCheckpointMetadata checkpointMetadata) {
+    return importHeap(vm, view, selectedClassNames, selectedStaticClassNames, checkpointMetadata, null);
+  }
+
+  public ImportResult importHeap(VM vm, HprofView view, Set<String> selectedClassNames,
+      Set<String> selectedStaticClassNames, HprofCheckpointMetadata checkpointMetadata,
+      HprofLoaderImportContext loaderContext) {
     if (selectedClassNames == null) {
       throw new IllegalArgumentException("selected HPROF classes must not be null");
     }
     if (selectedStaticClassNames == null) {
       throw new IllegalArgumentException("selected HPROF static classes must not be null");
     }
-    if (selectedClassNames.isEmpty() && selectedStaticClassNames.isEmpty()) {
+    if (selectedClassNames.isEmpty() && selectedStaticClassNames.isEmpty()
+        && (loaderContext == null || loaderContext.getClassMap().isEmpty())) {
       throw new IllegalArgumentException("at least one selected HPROF class is required");
     }
     if (checkpointMetadata == null) {
@@ -60,7 +67,7 @@ public final class JpfHeapImporter {
     require(ti != null, "no current JPF thread during heap import");
 
     ImportState state = new ImportState(
-        vm, view, selectedClassNames, selectedStaticClassNames, checkpointMetadata, ti);
+        vm, view, selectedClassNames, selectedStaticClassNames, checkpointMetadata, loaderContext, ti);
     state.allocateObjectsAndArrays();       // Pass A: establish every identity.
     state.populateObjectsAndArrays();       // Pass B: translate state through that identity map.
     ImportResult result = state.toResult();
@@ -74,6 +81,7 @@ public final class JpfHeapImporter {
     private final Set<String> selectedClassNames;
     private final Set<String> selectedStaticClassNames;
     private final HprofCheckpointMetadata checkpointMetadata;
+    private final HprofLoaderImportContext loaderContext;
     private final ThreadInfo ti;
     private final List<ClassInstance> selectedInstances = new ArrayList<>();
     private final List<ClassObj> selectedStaticClasses = new ArrayList<>();
@@ -89,12 +97,13 @@ public final class JpfHeapImporter {
 
     ImportState(VM vm, HprofView view, Set<String> selectedClassNames,
         Set<String> selectedStaticClassNames, HprofCheckpointMetadata checkpointMetadata,
-        ThreadInfo ti) {
+        HprofLoaderImportContext loaderContext, ThreadInfo ti) {
       this.jpfHeap = vm.getHeap();
       this.view = view;
       this.selectedClassNames = selectedClassNames;
       this.selectedStaticClassNames = selectedStaticClassNames;
       this.checkpointMetadata = checkpointMetadata;
+      this.loaderContext = loaderContext;
       this.ti = ti;
     }
 
@@ -102,7 +111,7 @@ public final class JpfHeapImporter {
       collectSelectedInstances();
       for (ClassInstance instance : selectedInstances) {
         String className = instance.getClassObj().getClassName();
-        ClassInfo ci = ClassLoaderInfo.getSystemResolvedClassInfo(className);
+        ClassInfo ci = classInfoFor(instance.getClassObj());
         ElementInfo ei = jpfHeap.newObject(ci, ti);
         putIdentity(instance.getId(), ei.getObjectRef());
         objects++;
@@ -131,8 +140,8 @@ public final class JpfHeapImporter {
           String declaringClassName = fieldValue.declaringClass.getClassName();
           Type fieldType = fieldValue.field.getType();
           Object value = fieldValue.value;
-          ClassInfo declaringCi =
-              ClassLoaderInfo.getSystemResolvedClassInfo(declaringClassName);
+          ClassInfo declaringCi = declaringClassInfo(
+              instance.getClassObj(), ei.getClassInfo(), fieldValue.declaringClass);
           FieldInfo jpfField = declaringCi.getDeclaredInstanceField(fieldName);
           require(jpfField != null,
               fieldDescription(declaringClassName, fieldName) + " has no matching JPF FieldInfo");
@@ -408,23 +417,64 @@ public final class JpfHeapImporter {
       return declared;
     }
 
+    private ClassInfo classInfoFor(ClassObj sourceClass) {
+      ClassInfo bundled = loaderContext == null ? null : loaderContext.getClassInfo(sourceClass.getId());
+      return bundled != null
+          ? bundled : ClassLoaderInfo.getSystemResolvedClassInfo(sourceClass.getClassName());
+    }
+
+    private ClassInfo declaringClassInfo(
+        ClassObj sourceRuntimeClass, ClassInfo jpfRuntimeClass, ClassObj sourceDeclaringClass) {
+      if (loaderContext == null || loaderContext.getClassInfo(sourceRuntimeClass.getId()) == null) {
+        return ClassLoaderInfo.getSystemResolvedClassInfo(sourceDeclaringClass.getClassName());
+      }
+      ClassObj source = sourceRuntimeClass;
+      ClassInfo target = jpfRuntimeClass;
+      while (source != null && target != null) {
+        if (source.getId() == sourceDeclaringClass.getId()) return target;
+        source = source.getSuperClassObj();
+        target = target.getSuperClass();
+      }
+      throw new IllegalStateException("[HPROF-JPF] loader-qualified declaring class not found: "
+          + sourceDeclaringClass.getClassName());
+    }
+
     private void collectSelectedInstances() {
       Map<String, Integer> counts = new HashMap<>();
+      Map<Long, Integer> bundledCounts = new HashMap<>();
       for (Instance instance : view.instances.values()) {
         ClassObj classObj = instance.getClassObj();
-        if (classObj != null && selectedClassNames.contains(classObj.getClassName())) {
+        boolean selectedByName = classObj != null
+            && selectedClassNames.contains(classObj.getClassName());
+        boolean selectedByBundle = classObj != null && loaderContext != null
+            && loaderContext.getClassInfo(classObj.getId()) != null;
+        if (selectedByName || selectedByBundle) {
           require(instance instanceof ClassInstance,
               "selected ordinary object is not a ClassInstance: " + classObj.getClassName());
           selectedInstances.add((ClassInstance) instance);
-          counts.put(classObj.getClassName(), counts.getOrDefault(classObj.getClassName(), 0) + 1);
+          if (selectedByName) {
+            counts.put(classObj.getClassName(),
+                counts.getOrDefault(classObj.getClassName(), 0) + 1);
+          }
+          if (selectedByBundle) {
+            bundledCounts.put(classObj.getId(),
+                bundledCounts.getOrDefault(classObj.getId(), 0) + 1);
+          }
         }
       }
       selectedInstances.sort(Comparator
           .comparing((ClassInstance i) -> i.getClassObj().getClassName())
+          .thenComparingLong(i -> i.getClassObj().getId())
           .thenComparingLong(Instance::getId));
       for (String className : selectedClassNames) {
         require(counts.getOrDefault(className, 0) > 0,
             "no HPROF instances found for selected class " + className);
+      }
+      if (loaderContext != null) {
+        for (Long classId : loaderContext.getClassMap().keySet()) {
+          require(bundledCounts.getOrDefault(classId, 0) > 0,
+              "no HPROF instances found for bundled ClassObj 0x" + Long.toHexString(classId));
+        }
       }
     }
 

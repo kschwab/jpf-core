@@ -60,6 +60,12 @@ Checkpoint loader-state characterization:
 ./gradlew hprofClassLoaderStateTest --no-daemon
 ~~~
 
+Loader-qualified class reconstruction regression:
+
+~~~bash
+./gradlew hprofLoaderQualifiedImportTest --no-daemon
+~~~
+
 Checkpoint-bundle correlation regression:
 
 ~~~bash
@@ -214,6 +220,15 @@ Currently supported within selected classes includes all eight Java primitive sc
 | generic loader-aware JPF import | unsupported |
 | generic loader capability replay | unsupported |
 | lifecycle schema loader qualification | unsupported in V1 |
+| loader HPROF ID -> modeled ClassLoaderInfo | verified |
+| ClassObj ID -> loader-qualified ClassInfo | verified |
+| same-name/different-loader instance allocation | verified |
+| same-name/different-bytecode method execution | verified |
+| loader-qualified instance field reconstruction | verified |
+| system-loader substitution prevention | verified |
+| generic loader parents | unsupported |
+| loader-qualified object arrays | deferred |
+| future dynamic custom loading | unsupported |
 | thread state | deferred |
 | stack frames / program counters | deferred |
 | monitors | deferred |
@@ -1124,3 +1139,98 @@ bundle-local loader identity + binary class name
 ~~~
 
 but H.3 deliberately does not create the `HPROF loader -> ClassLoaderInfo` or `ClassObj -> ClassInfo` mappings.
+
+
+## Pass H.4 — Loader-Qualified Class Reconstruction
+
+H.4 adds the first bounded bundle-aware import path. Existing name-selected classes continue through system-loader resolution unchanged. When `hprof.bundle` is configured, the verified bundle supplies exact capture-local identities and executable definitions:
+
+~~~text
+captured loader HPROF ID -> modeled ClassLoaderInfo
+captured ClassObj HPROF ID -> loader-qualified JPF ClassInfo
+captured instance.getClassObj().getId() -> exact JPF ClassInfo -> JPF object
+~~~
+
+### Bundle configuration and validation
+
+The listener accepts:
+
+~~~properties
+hprof.bundle=/absolute/path/to/class-loader-checkpoint
+~~~
+
+The bundle's manifest identifies the HPROF, so `hprof.file` is optional in this mode. If both are supplied, their canonical files must match. Before any JPF loader/class construction, `HprofCheckpointBundle.loadAndVerify` validates the bundle version, relative paths, HPROF SHA-256, class-artifact SHA-256 values, positive logical counts, logical-loader references, and unique non-null HPROF IDs. `HprofLoaderImportContext.create` then verifies each loader instance and ClassObj exists in the parsed dump, each ClassObj has the manifest loader, and slash/dot-normalized names match.
+
+Bundle entries select exact HPROF `ClassObj` IDs; the ambiguous name-only `hprof.classes=hprof.loader.Duplicate` mechanism is not used. Name-only selection remains the system/default-loader path for existing fixtures.
+
+### Minimum modeled loader and definition path
+
+For each unique captured loader HPROF ID, `HprofLoaderImportContext` allocates one modeled `java.lang.ClassLoader` object and constructs one `ClassLoaderInfo` through a narrow subclass of the same protected constructor used by `JPF_java_lang_ClassLoader`:
+
+~~~text
+new ClassLoaderInfo(vm, modeledLoaderRef, new ClassPath(), modeledSystemLoader)
+  -> writes nativeId
+  -> links modeled parent
+  -> creates per-loader Statics
+  -> VM.registerClassLoader(...)
+~~~
+
+The controlled HotSpot loaders have `parent == null`; non-null captured parents fail as unsupported. JPF combines bootstrap and system definition lookup, so a captured null/bootstrap parent is represented by the modeled system loader for resolving `java.lang.Object`. During predefinition the bounded checkpoint loader disables modeled `loadClass` round trips and delegates dependency resolution natively to that system parent; a round trip cannot execute during `vmInitialized()`.
+
+Each integrity-verified artifact is read and passed to:
+
+~~~java
+cli.getResolvedClassInfo(binaryName, bytes, 0, bytes.length)
+ci.registerClass(threadInfo)
+~~~
+
+The result must have the requested name and the exact mapped `ClassLoaderInfo`; otherwise import fails. No system-loader classpath definition can satisfy this path.
+
+### Exact allocation and field identity
+
+`JpfHeapImporter` accepts an optional `HprofLoaderImportContext`. Bundle-selected objects are chosen by exact `ClassObj.getId()`, and Pass A uses the context's `ClassInfo` rather than resolving by name. Existing callers pass no context and retain prior behavior.
+
+For a loader-qualified object, declaring-field resolution walks the HAHA `ClassObj` hierarchy and the actual allocated object's JPF `ClassInfo` hierarchy in parallel. It never calls `getSystemResolvedClassInfo(declaringName)` for those fields. The H.4 fixture extends only `java.lang.Object`; custom loader-qualified superclasses and interfaces remain deferred.
+
+### Verified fixture
+
+The H.3 generator now gives each same-named definition one captured field and one accessor:
+
+~~~text
+loader/class A:
+  hprof.loader.Duplicate.marker = 1111
+  definitionMarker() = 111
+
+loader/class B:
+  hprof.loader.Duplicate.marker = 2222
+  definitionMarker() = 222
+~~~
+
+A host-side validator proves two loader mappings, two ClassObj/ClassInfo mappings, equal binary names, distinct `ClassLoaderInfo` objects, distinct `ClassInfo` objects and unique IDs, exact object-to-ClassInfo association, restored markers, and rejection of system-loader substitution.
+
+Two test-only system-loader static `Object` fields expose the imported references to modeled code. Modeled reflection invokes `getMarker()` and `definitionMarker()` on both objects and verifies:
+
+~~~text
+fields={1111,2222}
+methods={111,222}
+~~~
+
+This root holder is test infrastructure, not generic checkpoint-root reconstruction.
+
+The focused regression is:
+
+~~~bash
+./gradlew hprofLoaderQualifiedImportTest --no-daemon
+~~~
+
+It regenerates/finalizes the H.3 bundle, launches a separate RunJPF process with `+hprof.bundle=<bundle>`, reconstructs loaders/classes/instances, executes both bundled definitions, and requires `no errors detected`. Two consecutive fresh-capture runs passed with changing HPROF IDs.
+
+Import counts remain heap-state counts:
+
+~~~text
+objects=2 arrays=0 mappings=2 primitiveFields=2 references=0
+arrayElements=0 staticPrimitiveFields=0 staticReferences=0
+loader mappings=2 bundled class mappings=2
+~~~
+
+Current limitations remain deliberate: non-null custom loader parents, loader-qualified static reconstruction, loader-qualified lifecycle metadata, loader-qualified object-array component resolution, custom superclass/interface definition graphs, arbitrary loader capability replay, and future dynamic loading are unsupported or deferred. Lifecycle metadata V1 is unchanged.

@@ -1445,6 +1445,46 @@ tasks.register('hprofCheckpointBundleTest') {
     dependsOn runHprofCheckpointBundleJpf
     doLast { println 'HPROF checkpoint-bundle correlation regression passed' }
 }
+// Loader-qualified instance reconstruction from the verified checkpoint bundle.
+def hprofLoaderQualifiedImportConfig =
+        file("${projectDir}/src/examples/HprofLoaderQualifiedImport.jpf")
+def hprofLoaderQualifiedImportOutput = new ByteArrayOutputStream()
+
+tasks.register('runHprofLoaderQualifiedImportJpf', Exec) {
+    group = "verification"
+    description = "Imports captured same-name classes and instances under exact modeled loaders."
+    dependsOn buildJars
+    dependsOn finalizeHprofCheckpointBundle
+    outputs.upToDateWhen { false }
+    doFirst {
+        hprofLoaderQualifiedImportOutput.reset()
+        commandLine "${System.getProperty('java.home')}/bin/java",
+                '-cp', "${buildDir}/RunJPF.jar${File.pathSeparator}${buildDir}/deps/*",
+                'gov.nasa.jpf.tool.RunJPF',
+                "+hprof.bundle=${hprofCheckpointBundleDir.absolutePath}",
+                hprofLoaderQualifiedImportConfig.absolutePath
+        standardOutput = hprofLoaderQualifiedImportOutput
+        errorOutput = hprofLoaderQualifiedImportOutput
+    }
+    doLast {
+        String output = hprofLoaderQualifiedImportOutput.toString('UTF-8')
+        print output
+        ['[HPROF-JPF] loader-qualified import verified: loaders=2 bundledClasses=2 objects=2 mappings=2 systemFallback=false',
+         '[HPROF-JPF-MODEL] loader-qualified imported instances verified: fields={1111,2222} methods={111,222}',
+         'no errors detected'].each { diagnostic ->
+            if (!output.contains(diagnostic)) {
+                throw new GradleException("Loader-qualified import missing diagnostic: ${diagnostic}")
+            }
+        }
+    }
+}
+
+tasks.register('hprofLoaderQualifiedImportTest') {
+    group = "verification"
+    description = "Reconstructs captured instances with exact bundle-qualified JPF class identity."
+    dependsOn runHprofLoaderQualifiedImportJpf
+    doLast { println 'HPROF loader-qualified class reconstruction regression passed' }
+}
 tasks.register('hprofRegressionTest') {
     group = "verification"
     description = "Runs all durable HPROF -> JPF regressions."
@@ -1462,4 +1502,5 @@ tasks.register('hprofRegressionTest') {
     dependsOn hprofClassLoaderIdentityTest
     dependsOn hprofClassLoaderStateTest
     dependsOn hprofCheckpointBundleTest
+    dependsOn hprofLoaderQualifiedImportTest
 }

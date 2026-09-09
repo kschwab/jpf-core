@@ -9,11 +9,23 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 
-/** Minimal version-one manifest model and integrity validator for an H.3 bundle directory. */
+/** Minimal version-one manifest model and integrity validator for a checkpoint bundle directory. */
 public final class HprofCheckpointBundle {
+  public static final class LoaderDefinition {
+    public final long logicalId;
+    public final long hprofLoaderId;
+
+    private LoaderDefinition(long logicalId, long hprofLoaderId) {
+      this.logicalId = logicalId;
+      this.hprofLoaderId = hprofLoaderId;
+    }
+  }
+
   public static final class ClassDefinition {
     public final long logicalId;
     public final long logicalLoaderId;
@@ -36,14 +48,16 @@ public final class HprofCheckpointBundle {
   public final Path root;
   public final Path hprof;
   public final String hprofSha256;
+  public final Map<Long, LoaderDefinition> loaders;
   public final List<ClassDefinition> classes;
 
   private HprofCheckpointBundle(Path root, Path hprof, String hprofSha256,
-      List<ClassDefinition> classes) {
+      Map<Long, LoaderDefinition> loaders, List<ClassDefinition> classes) {
     this.root = root;
     this.hprof = hprof;
     this.hprofSha256 = hprofSha256;
-    this.classes = Collections.unmodifiableList(classes);
+    this.loaders = Collections.unmodifiableMap(new LinkedHashMap<>(loaders));
+    this.classes = Collections.unmodifiableList(new ArrayList<>(classes));
   }
 
   public static HprofCheckpointBundle loadAndVerify(File directory) throws IOException {
@@ -57,19 +71,36 @@ public final class HprofCheckpointBundle {
     Path hprof = safePath(root, required(values, "hprof.file"));
     String hprofHash = required(values, "hprof.sha256");
     requireSha256(hprof, hprofHash, "HPROF");
-    int classCount = Integer.parseInt(required(values, "class.count"));
+
+    int loaderCount = positiveCount(values, "loader.count");
+    Map<Long, LoaderDefinition> loaders = new LinkedHashMap<>();
+    for (int i = 1; i <= loaderCount; i++) {
+      long logicalId = i;
+      long hprofId = parseId(required(values, "loader." + i + ".hprof_id"));
+      require(hprofId != 0, "loader " + i + " has null HPROF ID");
+      require(loaders.put(logicalId, new LoaderDefinition(logicalId, hprofId)) == null,
+          "duplicate logical loader " + logicalId);
+    }
+
+    int classCount = positiveCount(values, "class.count");
     List<ClassDefinition> classes = new ArrayList<>();
+    Map<Long, Boolean> classIds = new LinkedHashMap<>();
     for (int i = 1; i <= classCount; i++) {
       String prefix = "class." + i + ".";
+      long logicalLoaderId = Long.parseLong(required(values, prefix + "loader"));
+      require(loaders.containsKey(logicalLoaderId),
+          "class " + i + " references unknown logical loader " + logicalLoaderId);
       Path artifact = safePath(root, required(values, prefix + "file"));
       String artifactHash = required(values, prefix + "sha256");
       requireSha256(artifact, artifactHash, "class artifact " + i);
-      classes.add(new ClassDefinition(i,
-          Long.parseLong(required(values, prefix + "loader")),
-          required(values, prefix + "name"),
-          parseId(required(values, prefix + "hprof_id")), artifact, artifactHash));
+      long hprofClassId = parseId(required(values, prefix + "hprof_id"));
+      require(hprofClassId != 0, "class " + i + " has null HPROF ID");
+      require(classIds.put(hprofClassId, Boolean.TRUE) == null,
+          "duplicate ClassObj HPROF ID 0x" + Long.toHexString(hprofClassId));
+      classes.add(new ClassDefinition(i, logicalLoaderId,
+          required(values, prefix + "name"), hprofClassId, artifact, artifactHash));
     }
-    return new HprofCheckpointBundle(root, hprof, hprofHash, classes);
+    return new HprofCheckpointBundle(root, hprof, hprofHash, loaders, classes);
   }
 
   static Path safePath(Path root, String relative) {
@@ -101,6 +132,17 @@ public final class HprofCheckpointBundle {
     } catch (NoSuchAlgorithmException impossible) {
       throw new AssertionError("SHA-256 unavailable", impossible);
     }
+  }
+
+  private static int positiveCount(Properties values, String key) {
+    int count;
+    try {
+      count = Integer.parseInt(required(values, key));
+    } catch (NumberFormatException ex) {
+      throw new IllegalArgumentException("[HPROF-JPF] invalid bundle: invalid " + key, ex);
+    }
+    require(count > 0, key + " must be positive");
+    return count;
   }
 
   private static String required(Properties values, String key) {

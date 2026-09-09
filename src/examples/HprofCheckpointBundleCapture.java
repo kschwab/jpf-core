@@ -39,6 +39,8 @@ public final class HprofCheckpointBundleCapture {
     Class<?> classB = loaderB.define(bytesB);
     Object instanceA = classA.getDeclaredConstructor().newInstance();
     Object instanceB = classB.getDeclaredConstructor().newInstance();
+    classA.getField("marker").setInt(instanceA, 1111);
+    classB.getField("marker").setInt(instanceB, 2222);
     require(invokeMarker(instanceA) == 111 && invokeMarker(instanceB) == 222,
         "different captured definitions did not execute distinct behavior");
 
@@ -62,8 +64,8 @@ public final class HprofCheckpointBundleCapture {
     Path output = work.resolve("out");
     Files.createDirectories(source.getParent());
     Files.createDirectories(output);
-    String text = "package hprof.loader; public class Duplicate { "
-        + "public int definitionMarker() { return " + marker + "; } }\n";
+    String text = "package hprof.loader; public class Duplicate { public int marker; "
+        + "public int definitionMarker() { return " + marker + "; } public int getMarker() { return marker; } }\n";
     Files.write(source, text.getBytes(StandardCharsets.UTF_8));
     JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
     if (compiler == null) {
