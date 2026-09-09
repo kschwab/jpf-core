@@ -42,6 +42,12 @@ Class-initialization-state characterization:
 ./gradlew hprofClassInitTest --no-daemon
 ~~~
 
+Supplemental class-lifecycle metadata regression:
+
+~~~bash
+./gradlew hprofClassLifecycleTest --no-daemon
+~~~
+
 All HPROF regressions:
 
 ~~~bash
@@ -145,12 +151,19 @@ Currently supported within selected classes includes all eight Java primitive sc
 | static field values | verified |
 | no-`<clinit>` static classes | verified |
 | class contains `<clinit>` | unsupported for import |
-| loaded-but-uninitialized class | characterized; reconstruction blocked without metadata |
-| initialized class with `<clinit>` | characterized; reconstruction blocked without metadata |
+| loaded-but-uninitialized class | verified with lifecycle metadata |
+| initialized class with `<clinit>` | verified with lifecycle metadata |
 | class-init state observable in HPROF | no explicit standard HPROF status |
-| JPF initialized-state restoration | supported API if state is supplied; end-to-end deferred |
-| JPF uninitialized-state preservation | supported API if state is supplied; end-to-end deferred |
-| exact `<clinit>` continuation semantics | blocked on supplemental capture metadata |
+| JPF initialized-state restoration | verified with lifecycle metadata |
+| JPF uninitialized-state preservation | verified with lifecycle metadata |
+| initialized state without rerunning `<clinit>` | verified |
+| uninitialized first-use `<clinit>` behavior | verified |
+| supplemental lifecycle metadata V1 | verified |
+| `INITIALIZING` lifecycle state | unsupported |
+| initializing thread identity | unsupported |
+| initialization failure state | unsupported |
+| multi-loader lifecycle identity | unsupported |
+| exact `<clinit>` continuation semantics | verified for V1 states only |
 | class with `<clinit>` | unsupported |
 | class-initialization state restoration | deferred |
 | HPROF GC roots | unsupported |
@@ -762,3 +775,88 @@ On the current HotSpot, the uninitialized `CLASS_DUMP` additionally contains an 
 No supplemental metadata prototype was added. Supplying and validating a capture-side class-state manifest is a separate design milestone; adding one here would prematurely choose a checkpoint format. No modeled continuation assertion is claimed in G.2 because choosing initialized versus uninitialized without that metadata would itself be the unsound operation under investigation.
 
 **Research implication:** exact JVM checkpoint continuation cannot infer class initialization state from standard HPROF static contents. A complete capture must provide supplemental runtime metadata for at least loaded/registered, initializing (including ownership), initialized, and failed initialization semantics. Until then, generic static import continues to reject selected classes with `<clinit>`.
+
+## Pass G.3 — Supplemental Class-Lifecycle Metadata V1
+
+G.3 demonstrates the CASE B remedy experimentally. Standard HPROF remains the source of heap objects and static values; a separate, explicitly versioned checkpoint file supplies the class lifecycle bit that HPROF lacks. Together they produce correct modeled continuation for the two V1 states.
+
+### Metadata V1
+
+The optional listener property is:
+
+~~~properties
+hprof.lifecycle_file=/absolute/path/to/checkpoint.properties
+~~~
+
+The dependency-free, constrained properties-style schema is:
+
+~~~properties
+checkpoint.version=1
+class.HprofClassInitState$InitSubject=UNINITIALIZED
+~~~
+
+or:
+
+~~~properties
+checkpoint.version=1
+class.HprofClassInitState$InitSubject=INITIALIZED
+~~~
+
+`HprofCheckpointMetadata.load(File)` requires `checkpoint.version=1`, exact `class.<binary-name>` keys, and lifecycle values from the enum `{UNINITIALIZED, INITIALIZED}`. It preserves entries in an immutable map and distinguishes an absent lifecycle entry from both enum values. It rejects a missing/unsupported version, malformed lines, empty keys/values, duplicate keys, unknown keys, and unknown lifecycle values. The importer additionally rejects lifecycle entries not selected through `hprof.static_classes`; class resolution and exact HPROF `ClassObj` selection must also succeed.
+
+V1 assumes the system/default modeled class loader and exact binary names. It does not encode `INITIALIZING`, the initializing thread, initialization failure, loader-qualified identity, modules, or any other runtime lifecycle data. This is a prototype checkpoint channel, not a commitment to the final dissertation capture format.
+
+### Import sequencing
+
+Existing callers without `hprof.lifecycle_file` receive empty metadata and retain G.1 behavior. A selected static class with `<clinit>` and no lifecycle entry still fails clearly. No-`<clinit>` classes continue through the original register/initialize/restore path without requiring metadata.
+
+For a selected `<clinit>` class, the importer performs:
+
+~~~text
+resolve and register (StaticElementInfo.status == UNINITIALIZED)
+  -> Pass A has already allocated all selected identities
+  -> restore declared HPROF static fields
+  -> metadata UNINITIALIZED: leave status unchanged
+     metadata INITIALIZED: call public ClassInfo.setInitialized()
+  -> modeled execution
+~~~
+
+The importer never calls `initializeClass()` for a selected `<clinit>` class during restoration, so import cannot push or execute `<clinit>`. For `INITIALIZED`, `setInitialized()` occurs only after all captured static values have been written. For `UNINITIALIZED`, the status remains `ClassInfo.UNINITIALIZED`; the first modeled active use follows normal JPF bytecode initialization and executes `<clinit>`.
+
+HotSpot's G.2 `<init_lock>` pseudo-static is not parsed, consulted, or used as lifecycle input. Static dependency discovery now considers only source entries matching declared JPF static fields, and unmatched non-classfile HPROF entries receive a diagnostic and are ignored as non-modeled implementation data.
+
+### Behavioral regression
+
+`HprofClassInitState$InitEffects` has no `<clinit>` and is restored normally. `InitSubject.value` is zero in both captures, while `InitEffects.effectCount` is the independent behavioral oracle:
+
+- uninitialized HPROF + explicit `UNINITIALIZED`: host validation observes status `-1` and `effectCount=0`; first modeled `GETSTATIC` executes `<clinit>`, changing the count to one; a second active use leaves it at one; final status is `-2`;
+- initialized HPROF + explicit `INITIALIZED`: host validation observes status `-2` and captured `effectCount=1`; two modeled active uses leave the count at one, proving `<clinit>` was not rerun.
+
+Both runs import only two primitive statics and no heap identities:
+
+~~~text
+objects=0 arrays=0 mappings=0 primitiveFields=0 references=0
+arrayElements=0 staticPrimitiveFields=2 staticReferences=0
+~~~
+
+The durable task is:
+
+~~~bash
+./gradlew hprofClassLifecycleTest --no-daemon
+~~~
+
+It depends on the independent G.2 HotSpot dump tasks, then launches two separate JPF processes using the corresponding checked-in metadata files and modeled target arguments. It is also included in `hprofRegressionTest`.
+
+A wrong-metadata negative control was deliberately omitted: it would require weakening or duplicating the host validator because the captured effect count is intentionally inconsistent with wrong lifecycle metadata. The two positive cases already demonstrate that externally supplied state—not static-value inference—controls continuation, while keeping the regression focused on valid checkpoints.
+
+**Architectural result:** this is the first demonstrated JVM continuation-state component that requires information outside standard HPROF. HPROF supplies concrete heap/static values; supplemental metadata supplies lifecycle semantics; JPF combines both without replaying completed initialization or suppressing initialization that still must occur.
+
+## Session Handoff — Pass G.3
+
+- Changed: versioned supplemental lifecycle metadata loader, optional `hprof.lifecycle_file`, metadata-aware static import sequencing, and a static-only two-case continuation fixture.
+- Proven: explicit `UNINITIALIZED` remains status `-1` until first modeled active use and runs `<clinit>` exactly once; explicit `INITIALIZED` begins at status `-2` and active use does not replay `<clinit>`.
+- Isolation: no lifecycle inference uses HPROF values or HotSpot `<init_lock>`; existing no-`<clinit>` static behavior remains unchanged.
+- Counts per case: objects=0, arrays=0, mappings=0, primitiveFields=0, references=0, arrayElements=0, staticPrimitiveFields=2, staticReferences=0.
+- Regressions: two consecutive `hprofClassLifecycleTest` runs passed; the aggregate passed with `BUILD SUCCESSFUL` and 45 actionable tasks (31 executed, 14 up-to-date).
+- Current limitation: V1 cannot represent initializing ownership, failed initialization, or loader-qualified class identity.
+- Recommended next milestone: validate the metadata format's failure cases in focused unit tests, then decide whether loader-qualified identity or another bounded heap type is the next research priority.

@@ -7,6 +7,7 @@ import gov.nasa.jpf.JPFConfigException;
 import gov.nasa.jpf.ListenerAdapter;
 import gov.nasa.jpf.vm.MJIEnv;
 import gov.nasa.jpf.vm.VM;
+import gov.nasa.jpf.vm.hprof.HprofCheckpointMetadata;
 import gov.nasa.jpf.vm.hprof.HprofGraphIdentityValidator;
 import gov.nasa.jpf.vm.hprof.HprofPassASmokeGcVerifier;
 import gov.nasa.jpf.vm.hprof.HprofPassASmokeRootBinder;
@@ -28,6 +29,7 @@ public class HprofHeapBootstrap extends ListenerAdapter {
   private final File hprof;
   private final Set<String> selectedClasses;
   private final Set<String> selectedStaticClasses;
+  private final HprofCheckpointMetadata checkpointMetadata;
   private final boolean smokeBindRoot;
   private final boolean smokeValidate;
   private final boolean smokeGcValidate;
@@ -50,13 +52,30 @@ public class HprofHeapBootstrap extends ListenerAdapter {
     }
 
     String[] classNames = conf.getCompactTrimmedStringArray("hprof.classes");
-    if (classNames.length == 0) {
-      throw new JPFConfigException("Missing required property: hprof.classes");
-    }
     selectedClasses = Collections.unmodifiableSet(new HashSet<>(Arrays.asList(classNames)));
     String[] staticClassNames = conf.getCompactTrimmedStringArray("hprof.static_classes");
     selectedStaticClasses = Collections.unmodifiableSet(
         new HashSet<>(Arrays.asList(staticClassNames)));
+    if (selectedClasses.isEmpty() && selectedStaticClasses.isEmpty()) {
+      throw new JPFConfigException(
+          "At least one of hprof.classes or hprof.static_classes is required");
+    }
+    String lifecyclePath = conf.getString("hprof.lifecycle_file");
+    if (lifecyclePath == null || lifecyclePath.trim().isEmpty()) {
+      checkpointMetadata = HprofCheckpointMetadata.empty();
+    } else {
+      File lifecycleFile = new File(lifecyclePath);
+      if (!lifecycleFile.isFile()) {
+        throw new JPFConfigException(
+            "hprof.lifecycle_file not found: " + lifecycleFile.getAbsolutePath());
+      }
+      try {
+        checkpointMetadata = HprofCheckpointMetadata.load(lifecycleFile);
+      } catch (Exception ex) {
+        throw new JPFConfigException(
+            "invalid hprof.lifecycle_file: " + lifecycleFile.getAbsolutePath(), ex);
+      }
+    }
     smokeBindRoot = conf.getBoolean("hprof.smoke_bind_root", false);
     smokeValidate = conf.getBoolean("hprof.smoke_validate", false);
     smokeGcValidate = conf.getBoolean("hprof.smoke_gc_validate", false);
@@ -89,7 +108,8 @@ public class HprofHeapBootstrap extends ListenerAdapter {
       Snapshot snapshot = HprofSnapshotLoader.load(hprof);
       HprofView view = HprofView.from(snapshot);
       JpfHeapImporter.ImportResult result =
-          new JpfHeapImporter().importHeap(vm, view, selectedClasses, selectedStaticClasses);
+          new JpfHeapImporter().importHeap(
+              vm, view, selectedClasses, selectedStaticClasses, checkpointMetadata);
       if (smokeBindRoot) {
         int fooRef = HprofPassASmokeRootBinder.bind(vm, view, result);
         if (smokeGcValidate) {

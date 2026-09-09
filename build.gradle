@@ -1033,6 +1033,84 @@ tasks.register('hprofClassInitTest', JavaExec) {
     }
 }
 
+// Supplemental class-lifecycle metadata V1 regression.
+def hprofClassLifecycleUninitializedConfig =
+        file("${projectDir}/src/examples/HprofClassLifecycleUninitialized.jpf")
+def hprofClassLifecycleInitializedConfig =
+        file("${projectDir}/src/examples/HprofClassLifecycleInitialized.jpf")
+def hprofClassLifecycleUninitializedOutput = new ByteArrayOutputStream()
+def hprofClassLifecycleInitializedOutput = new ByteArrayOutputStream()
+
+tasks.register('runHprofClassLifecycleUninitializedJpf', Exec) {
+    group = "verification"
+    description = "Restores UNINITIALIZED lifecycle metadata and verifies first-use <clinit>."
+    dependsOn buildJars
+    dependsOn generateHprofClassInitUninitializedDump
+    outputs.upToDateWhen { false }
+    doFirst {
+        hprofClassLifecycleUninitializedOutput.reset()
+        commandLine "${System.getProperty('java.home')}/bin/java",
+                '-cp', "${buildDir}/RunJPF.jar${File.pathSeparator}${buildDir}/deps/*",
+                'gov.nasa.jpf.tool.RunJPF',
+                "+hprof.file=${hprofClassInitUninitializedDump.absolutePath}",
+                hprofClassLifecycleUninitializedConfig.absolutePath
+        standardOutput = hprofClassLifecycleUninitializedOutput
+    }
+    doLast {
+        String output = hprofClassLifecycleUninitializedOutput.toString('UTF-8')
+        print output
+        ['[HPROF-JPF] lifecycle class=HprofClassInitState$InitSubject state=UNINITIALIZED',
+         '[HPROF-JPF] lifecycle pre-use class=HprofClassInitState$InitSubject state=UNINITIALIZED status=-1 effectCount=0',
+         '[HPROF-JPF-MODEL] UNINITIALIZED lifecycle continuation verified',
+         '[HPROF-JPF] lifecycle post-use verified: initial=UNINITIALIZED final=INITIALIZED effectCount=1',
+         'no errors detected'].each { diagnostic ->
+            if (!output.contains(diagnostic)) {
+                throw new GradleException("UNINITIALIZED lifecycle regression missing: ${diagnostic}")
+            }
+        }
+    }
+}
+
+tasks.register('runHprofClassLifecycleInitializedJpf', Exec) {
+    group = "verification"
+    description = "Restores INITIALIZED lifecycle metadata without rerunning <clinit>."
+    dependsOn buildJars
+    dependsOn generateHprofClassInitInitializedDump
+    outputs.upToDateWhen { false }
+    doFirst {
+        hprofClassLifecycleInitializedOutput.reset()
+        commandLine "${System.getProperty('java.home')}/bin/java",
+                '-cp', "${buildDir}/RunJPF.jar${File.pathSeparator}${buildDir}/deps/*",
+                'gov.nasa.jpf.tool.RunJPF',
+                "+hprof.file=${hprofClassInitInitializedDump.absolutePath}",
+                hprofClassLifecycleInitializedConfig.absolutePath
+        standardOutput = hprofClassLifecycleInitializedOutput
+    }
+    doLast {
+        String output = hprofClassLifecycleInitializedOutput.toString('UTF-8')
+        print output
+        ['[HPROF-JPF] lifecycle class=HprofClassInitState$InitSubject state=INITIALIZED',
+         '[HPROF-JPF] lifecycle pre-use class=HprofClassInitState$InitSubject state=INITIALIZED status=-2 effectCount=1',
+         '[HPROF-JPF-MODEL] INITIALIZED lifecycle continuation verified',
+         '[HPROF-JPF] lifecycle post-use verified: initial=INITIALIZED final=INITIALIZED effectCount=1',
+         'no errors detected'].each { diagnostic ->
+            if (!output.contains(diagnostic)) {
+                throw new GradleException("INITIALIZED lifecycle regression missing: ${diagnostic}")
+            }
+        }
+    }
+}
+
+tasks.register('hprofClassLifecycleTest') {
+    group = "verification"
+    description = "Verifies supplemental UNINITIALIZED/INITIALIZED checkpoint metadata in JPF."
+    dependsOn runHprofClassLifecycleUninitializedJpf
+    dependsOn runHprofClassLifecycleInitializedJpf
+    doLast {
+        println 'HPROF supplemental class-lifecycle metadata regression passed'
+    }
+}
+
 tasks.register('hprofRegressionTest') {
     group = "verification"
     description = "Runs all durable HPROF -> JPF regressions."
@@ -1045,4 +1123,5 @@ tasks.register('hprofRegressionTest') {
     dependsOn hprofPrimitiveArrayTest
     dependsOn hprofStaticStateTest
     dependsOn hprofClassInitTest
+    dependsOn hprofClassLifecycleTest
 }

@@ -27,21 +27,40 @@ import java.util.Set;
 /** Two-pass importer for the deliberately narrow set of currently proven HPROF state. */
 public final class JpfHeapImporter {
   public ImportResult importHeap(VM vm, HprofView view, Set<String> selectedClassNames) {
-    return importHeap(vm, view, selectedClassNames, Collections.emptySet());
+    return importHeap(vm, view, selectedClassNames, Collections.emptySet(),
+        HprofCheckpointMetadata.empty());
   }
 
   public ImportResult importHeap(VM vm, HprofView view, Set<String> selectedClassNames,
       Set<String> selectedStaticClassNames) {
-    if (selectedClassNames == null || selectedClassNames.isEmpty()) {
-      throw new IllegalArgumentException("selected HPROF classes must not be empty");
+    return importHeap(vm, view, selectedClassNames, selectedStaticClassNames,
+        HprofCheckpointMetadata.empty());
+  }
+
+  public ImportResult importHeap(VM vm, HprofView view, Set<String> selectedClassNames,
+      Set<String> selectedStaticClassNames, HprofCheckpointMetadata checkpointMetadata) {
+    if (selectedClassNames == null) {
+      throw new IllegalArgumentException("selected HPROF classes must not be null");
     }
     if (selectedStaticClassNames == null) {
       throw new IllegalArgumentException("selected HPROF static classes must not be null");
     }
+    if (selectedClassNames.isEmpty() && selectedStaticClassNames.isEmpty()) {
+      throw new IllegalArgumentException("at least one selected HPROF class is required");
+    }
+    if (checkpointMetadata == null) {
+      throw new IllegalArgumentException("checkpoint metadata must not be null");
+    }
+    for (String className : checkpointMetadata.getClassNames()) {
+      require(selectedStaticClassNames.contains(className),
+          "lifecycle metadata class is not selected through hprof.static_classes: " + className);
+      ClassLoaderInfo.getSystemResolvedClassInfo(className);
+    }
     ThreadInfo ti = vm.getCurrentThread();
     require(ti != null, "no current JPF thread during heap import");
 
-    ImportState state = new ImportState(vm, view, selectedClassNames, selectedStaticClassNames, ti);
+    ImportState state = new ImportState(
+        vm, view, selectedClassNames, selectedStaticClassNames, checkpointMetadata, ti);
     state.allocateObjectsAndArrays();       // Pass A: establish every identity.
     state.populateObjectsAndArrays();       // Pass B: translate state through that identity map.
     ImportResult result = state.toResult();
@@ -54,6 +73,7 @@ public final class JpfHeapImporter {
     private final HprofView view;
     private final Set<String> selectedClassNames;
     private final Set<String> selectedStaticClassNames;
+    private final HprofCheckpointMetadata checkpointMetadata;
     private final ThreadInfo ti;
     private final List<ClassInstance> selectedInstances = new ArrayList<>();
     private final List<ClassObj> selectedStaticClasses = new ArrayList<>();
@@ -68,11 +88,13 @@ public final class JpfHeapImporter {
     private int staticReferences;
 
     ImportState(VM vm, HprofView view, Set<String> selectedClassNames,
-        Set<String> selectedStaticClassNames, ThreadInfo ti) {
+        Set<String> selectedStaticClassNames, HprofCheckpointMetadata checkpointMetadata,
+        ThreadInfo ti) {
       this.jpfHeap = vm.getHeap();
       this.view = view;
       this.selectedClassNames = selectedClassNames;
       this.selectedStaticClassNames = selectedStaticClassNames;
+      this.checkpointMetadata = checkpointMetadata;
       this.ti = ti;
     }
 
@@ -197,16 +219,25 @@ public final class JpfHeapImporter {
       for (ClassObj sourceClass : selectedStaticClasses) {
         String className = sourceClass.getClassName();
         ClassInfo ci = ClassLoaderInfo.getSystemResolvedClassInfo(className);
-        require(ci.getClinit() == null,
+        HprofCheckpointMetadata.ClassLifecycle lifecycle =
+            checkpointMetadata.getClassLifecycle(className);
+        boolean hasClinit = ci.getClinit() != null;
+        require(!hasClinit || lifecycle != null,
             "HPROF static reconstruction for class " + className
-                + " with <clinit> is not supported because initialization state is not reconstructed");
+                + " with <clinit> requires explicit lifecycle metadata");
         if (!ci.isRegistered()) {
           ci.registerClass(ti);
         }
-        boolean pushedClinit = ci.initializeClass(ti);
-        require(!pushedClinit,
-            "initializing static class " + className + " unexpectedly required <clinit>");
-        require(ci.isInitialized(), "static class was not initialized: " + className);
+
+        if (hasClinit) {
+          require(ci.getStaticElementInfo().getStatus() == ClassInfo.UNINITIALIZED,
+              "selected <clinit> class was not newly registered/uninitialized: " + className);
+        } else {
+          boolean pushedClinit = ci.initializeClass(ti);
+          require(!pushedClinit,
+              "initializing no-<clinit> static class unexpectedly pushed a frame: " + className);
+          require(ci.isInitialized(), "static class was not initialized: " + className);
+        }
         StaticElementInfo statics = ci.getModifiableStaticElementInfo();
         require(statics != null, "no modifiable JPF static storage for " + className);
 
@@ -217,7 +248,14 @@ public final class JpfHeapImporter {
           String fieldName = sourceField.getName();
           String description = "static field " + className + "." + fieldName;
           FieldInfo jpfField = ci.getDeclaredStaticField(fieldName);
-          require(jpfField != null, description + " has no matching JPF FieldInfo");
+          if (jpfField == null) {
+            require(fieldName.startsWith("<") && fieldName.endsWith(">"),
+                description + " has no matching JPF FieldInfo");
+            System.out.printf("[HPROF-JPF] non-classfile static entry ignored: class=%s "
+                    + "field=%s type=%s%n",
+                className, fieldName, sourceField.getType());
+            continue;
+          }
           Object value = sourceValues.get(sourceField);
           if (sourceField.getType() == Type.OBJECT) {
             require(jpfField.isReference(), description + " is not a JPF reference field");
@@ -244,6 +282,18 @@ public final class JpfHeapImporter {
             System.out.printf("[HPROF-JPF] static-field class=%s field=%s type=%s value=%s%n",
                 className, fieldName, sourceField.getType(), value);
           }
+        }
+
+        if (hasClinit) {
+          if (lifecycle == HprofCheckpointMetadata.ClassLifecycle.INITIALIZED) {
+            ci.setInitialized();
+          } else {
+            require(lifecycle == HprofCheckpointMetadata.ClassLifecycle.UNINITIALIZED,
+                "unsupported lifecycle for " + className + ": " + lifecycle);
+            require(ci.getStaticElementInfo().getStatus() == ClassInfo.UNINITIALIZED,
+                "restoring statics changed UNINITIALIZED status for " + className);
+          }
+          System.out.println("[HPROF-JPF] lifecycle class=" + className + " state=" + lifecycle);
         }
       }
     }
@@ -409,8 +459,10 @@ public final class JpfHeapImporter {
         }
       }
       for (ClassObj sourceClass : selectedStaticClasses) {
+        ClassInfo jpfClass = ClassLoaderInfo.getSystemResolvedClassInfo(sourceClass.getClassName());
         for (Map.Entry<Field, Object> entry : sourceClass.getStaticFieldValues().entrySet()) {
-          if (entry.getKey().getType() == Type.OBJECT
+          if (jpfClass.getDeclaredStaticField(entry.getKey().getName()) != null
+              && entry.getKey().getType() == Type.OBJECT
               && entry.getValue() instanceof ArrayInstance) {
             ArrayInstance array = (ArrayInstance) entry.getValue();
             if (array.getArrayType() != Type.OBJECT) {
