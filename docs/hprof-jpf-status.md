@@ -54,6 +54,12 @@ Class-loader identity characterization:
 ./gradlew hprofClassLoaderIdentityTest --no-daemon
 ~~~
 
+Checkpoint loader-state characterization:
+
+~~~bash
+./gradlew hprofClassLoaderStateTest --no-daemon
+~~~
+
 All HPROF regressions:
 
 ~~~bash
@@ -184,6 +190,14 @@ Currently supported within selected classes includes all eight Java primitive sc
 | loader-qualified static reconstruction | unsupported |
 | loader-qualified lifecycle metadata | unsupported in V1 |
 | custom loader object/state reconstruction | unsupported |
+| capture-local loader identity | verified |
+| checkpoint-bundle loader identity | characterized |
+| cross-capture loader identity | deferred/not required for single replay |
+| standard HPROF classfile bytecode | absent |
+| fixture-retained loader bytecode | verified, fixture-specific |
+| modeled loader object -> `ClassLoaderInfo` registration | verified |
+| minimum duplicate-name JPF loader probe | verified |
+| loader external capability reconstruction | unsupported/fixture-dependent |
 | thread state | deferred |
 | stack frames / program counters | deferred |
 | monitors | deferred |
@@ -943,3 +957,89 @@ The focused regression is:
 ~~~
 
 It generates `build/hprof-smoke/hprof-class-loader-identity.hprof` in a real HotSpot process, parses it with production HAHA/HprofView code, and verifies two class IDs, two loader IDs, two instance IDs, exact instance-to-class-to-loader association, name-lookup ambiguity, and preservation by HprofView. It does not import the duplicate classes into JPF and does not change reconstruction semantics.
+
+## Pass H.2 — Checkpoint Loader Identity and Minimum JPF Loader State
+
+H.2 separates identity needed to correlate one checkpoint bundle from the target state needed to make a loader usable in JPF. It does not change metadata V1 or `JpfHeapImporter`.
+
+### Identity scopes and available identifiers
+
+- **Capture-local identity** is unique only within one HPROF. The class-object ID and defining-loader object ID provide this identity directly.
+- **Checkpoint-bundle identity** correlates one HPROF with supplemental artifacts captured for that same checkpoint. This is sufficient to reconstruct that captured JVM state; it need not survive another JVM run.
+- **Cross-capture identity** tries to recognize one conceptual loader across independent executions. Exact replay of one checkpoint does not require this stronger and often ill-defined identity.
+
+Available identifiers have different properties:
+
+| Candidate | HPROF-local uniqueness | HAHA visibility | Capture-side availability | Checkpoint use |
+|---|---|---|---|---|
+| `ClassObj.getId()` | unique class definition | public | not available from ordinary Java; assigned/encoded by dump machinery | strong bundle-local class key if metadata is correlated to this HPROF |
+| `ClassObj.getClassLoader().getId()` | unique loader object (`0`/`null` for bootstrap) | public after reference resolution | not available as an HPROF ID from ordinary Java | strong bundle-local loader key if correlation/post-processing is available |
+| `LOAD_CLASS` serial | unique load record within the dump | HAHA uses load records to associate names but does not expose the serial on `ClassObj` | JVM/dump-agent domain, not ordinary Java | inferior to direct class-object ID and not loader identity by itself |
+| class name | not unique across loaders | public; slash form observed for custom packaged class | available | readable component, insufficient alone |
+| loader class name | not unique across loader instances | through loader `Instance.getClassObj()` | available | diagnostic only |
+| capture-assigned logical loader ID | unique if capture channel enforces it | not standard HPROF unless correlated through a field/tag/artifact | directly available to its capture agent | promising portable bundle key, but requires an explicit correlation mechanism |
+| structural fingerprint | collision/semantic questions | derivable only from selected state | potentially | unnecessary for single-bundle replay and unsafe as the primary identity |
+
+Raw HPROF IDs are therefore valid checkpoint-local/bundle-local identities, despite being unstable across dumps. The practical caveat is correlation: ordinary Java code cannot ask HotSpot for the future HPROF object ID. A supplemental capture producer would need dump-agent/JVMTI cooperation, post-process the HPROF, or emit a logical ID that can be correlated to the loader object. H.2 does not choose that mechanism.
+
+A future semantic class identity should be:
+
+~~~text
+checkpoint loader identity + binary class name
+~~~
+
+A direct captured `ClassObj` identity is also an unambiguous bundle-local selection key. A future selection mechanism should select captured `ClassObj` identities rather than matching only `hprof.classes`/`hprof.static_classes` name strings.
+
+### Loader object graph and class definition fidelity
+
+The H.1 loader objects are ordinary `ClassInstance` records. HAHA exposes their inherited `java.lang.ClassLoader.parent` reference and application fields. The controlled parentless loaders contain:
+
+~~~text
+parent   -> null
+label    -> java.lang.String
+bytecode -> distinct byte[] objects, 299 bytes each, CAFEBABE classfile magic
+~~~
+
+The two retained byte arrays are byte-for-byte identical. This is fixture-specific: `DuplicateLoader` deliberately clones and stores the bytes in an ordinary field. HPROF captures those arrays because they are live heap state, not because class definitions are a standard HPROF feature.
+
+Standard HPROF `CLASS_DUMP` supplies structural metadata needed to decode heap state: superclass and loader IDs, instance size, constant-pool value entries, static values, and instance-field name/type descriptors. HAHA `ClassObj` exposes that structure but no method bytecode, executable code attributes, or original classfile byte stream. Therefore standard HPROF alone is insufficient to recreate an arbitrary dynamically defined executable class. Definition bytes must come from configured classpath/resources, loader-specific sources, captured heap bytes when they happen to exist, or a supplemental checkpoint artifact. Real duplicate-name classes may also have different bytes, so loader identity alone is insufficient for exact definition fidelity.
+
+HPROF can reconstruct ordinary loader fields, but that does not guarantee future loader behavior. Files, URLs, open archives, native handles, remote services, generated-class caches, and other external capabilities can be absent or stale. In this fixture the defining bytes are present, but executable loader behavior still also depends on the modeled loader class and its methods.
+
+### Minimum usable JPF state
+
+The modeled probe establishes the minimum working sequence in this checkout:
+
+1. Allocate and construct a modeled `java.lang.ClassLoader` subclass object for each loader.
+2. The `JPF_java_lang_ClassLoader` constructor peer resolves the modeled parent, constructs a host-side `ClassLoaderInfo(vm, loaderObjectRef, classPath, parent)`, assigns its `nativeId`, links `parent`, and calls `VM.registerClassLoader`.
+3. Supply classfile bytes to modeled `defineClass`; its peer recovers the `ClassLoaderInfo` from the modeled object's `nativeId`, calls loader-specific `getResolvedClassInfo(name, bytes, offset, length)`, and registers the resulting `ClassInfo`/static storage.
+4. Allocate instances using their respective loader-qualified `ClassInfo` definitions.
+
+Merely reconstructing the ordinary heap fields of a loader object does **not** execute its constructor peer and therefore does not automatically create or register a `ClassLoaderInfo`. Both modeled and host-side state must be established consistently.
+
+The probe defined `hprof.loader.Duplicate` under two modeled loaders and observed:
+
+~~~text
+loaderId=2 loaderObjectRef=1006 classUniqueId=0x200000000
+loaderId=3 loaderObjectRef=1007 classUniqueId=0x300000000
+~~~
+
+Modeled Java verified distinct `Class` objects, correct distinct `getClassLoader()` results, and instances whose runtime classes remain separate. The host listener verified equal names, distinct `ClassInfo` objects, distinct `ClassLoaderInfo` objects, distinct modeled loader refs, and distinct `ClassInfo.getUniqueId()` values. A system-loader definition can also exist concurrently because the fixture bytecode is on the configured classpath; the assertions deliberately target the two non-system definitions.
+
+The focused durable task is:
+
+~~~bash
+./gradlew hprofClassLoaderStateTest --no-daemon
+~~~
+
+It reuses the build-owned H.1 dump, validates the loader heap graph and incidental byte arrays with HAHA, runs the independent modeled-JPF duplicate-definition probe, and retains H.1 identity characterization. It does not import the captured loaders or objects.
+
+### Classification and design consequence
+
+- **Loader identity:** present in HPROF and exposed by HAHA.
+- **Class definition bytecode:** absent from standard HPROF `ClassObj`; externally recoverable, or incidentally present in ordinary heap fields as in this fixture.
+- **Loader ordinary heap state:** present and reconstructable to the extent supported ordinary fields/references are captured.
+- **Loader external capability:** absent or fixture-dependent; not guaranteed by HPROF.
+- **JPF target representation:** sufficient, but requires explicit modeled loader objects, registered `ClassLoaderInfo` state, parent linkage, and a definition source.
+
+Metadata V1 remains binary-name keyed and system/default-loader-only. A future V2 must represent loader-qualified class identity, but H.2 intentionally defines no syntax. The next implementation must also decide how one checkpoint bundle correlates supplemental loader/definition artifacts with the HPROF loader object identity.

@@ -1289,6 +1289,71 @@ tasks.register('hprofClassLoaderIdentityTest', JavaExec) {
     }
 }
 
+// Checkpoint loader-state and minimum modeled-JPF loader characterization.
+def hprofClassLoaderStateOutput = new ByteArrayOutputStream()
+def hprofJpfClassLoaderProbeConfig =
+        file("${projectDir}/src/examples/HprofJpfClassLoaderProbe.jpf")
+def hprofJpfClassLoaderProbeOutput = new ByteArrayOutputStream()
+
+tasks.register('characterizeHprofClassLoaderState', JavaExec) {
+    group = "verification"
+    description = "Characterizes loader object state and incidental class bytes in HPROF."
+    dependsOn compileJava
+    dependsOn copyRuntimeLibs
+    dependsOn generateHprofClassLoaderIdentityDump
+    classpath = files(sourceSets.main.output, configurations.runtimeClasspath)
+    mainClass = 'gov.nasa.jpf.vm.hprof.HprofClassLoaderStateCharacterizer'
+    args hprofClassLoaderIdentityDump.absolutePath
+    standardOutput = hprofClassLoaderStateOutput
+    outputs.upToDateWhen { false }
+    doFirst { hprofClassLoaderStateOutput.reset() }
+    doLast {
+        String output = hprofClassLoaderStateOutput.toString('UTF-8')
+        print output
+        ['[HPROF-JPF] loader ordinary state verified: parent=null label=String bytecode=byte[]',
+         '[HPROF-JPF] fixture class bytes retained incidentally in loader fields: identical=true',
+         '[HPROF-JPF] standard HPROF ClassObj has structural metadata but no classfile bytecode payload'].each { diagnostic ->
+            if (!output.contains(diagnostic)) {
+                throw new GradleException("Loader-state characterization missing: ${diagnostic}")
+            }
+        }
+    }
+}
+
+tasks.register('runHprofJpfClassLoaderProbe', Exec) {
+    group = "verification"
+    description = "Defines one binary class name independently under two modeled JPF loaders."
+    dependsOn buildJars
+    outputs.upToDateWhen { false }
+    doFirst {
+        hprofJpfClassLoaderProbeOutput.reset()
+        commandLine "${System.getProperty('java.home')}/bin/java",
+                '-cp', "${buildDir}/RunJPF.jar${File.pathSeparator}${buildDir}/deps/*",
+                'gov.nasa.jpf.tool.RunJPF', hprofJpfClassLoaderProbeConfig.absolutePath
+        standardOutput = hprofJpfClassLoaderProbeOutput
+    }
+    doLast {
+        String output = hprofJpfClassLoaderProbeOutput.toString('UTF-8')
+        print output
+        ['[HPROF-JPF-MODEL] duplicate-name custom Class definitions verified',
+         '[HPROF-JPF] JPF minimum loader state verified:',
+         'no errors detected'].each { diagnostic ->
+            if (!output.contains(diagnostic)) {
+                throw new GradleException("Modeled JPF loader probe missing: ${diagnostic}")
+            }
+        }
+    }
+}
+
+tasks.register('hprofClassLoaderStateTest') {
+    group = "verification"
+    description = "Characterizes checkpoint loader state and JPF's minimum loader representation."
+    dependsOn hprofClassLoaderIdentityTest
+    dependsOn characterizeHprofClassLoaderState
+    dependsOn runHprofJpfClassLoaderProbe
+    doLast { println 'HPROF checkpoint loader-state characterization passed' }
+}
+
 tasks.register('hprofRegressionTest') {
     group = "verification"
     description = "Runs all durable HPROF -> JPF regressions."
@@ -1304,4 +1369,5 @@ tasks.register('hprofRegressionTest') {
     dependsOn hprofClassLifecycleTest
     dependsOn hprofCheckpointMetadataTest
     dependsOn hprofClassLoaderIdentityTest
+    dependsOn hprofClassLoaderStateTest
 }
