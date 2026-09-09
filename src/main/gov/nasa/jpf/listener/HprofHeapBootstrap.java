@@ -11,6 +11,7 @@ import gov.nasa.jpf.vm.hprof.HprofCheckpointMetadata;
 import gov.nasa.jpf.vm.hprof.HprofCheckpointBundle;
 import gov.nasa.jpf.vm.hprof.HprofLoaderImportContext;
 import gov.nasa.jpf.vm.hprof.HprofLoaderQualifiedValidator;
+import gov.nasa.jpf.vm.hprof.HprofLoaderHierarchyValidator;
 import gov.nasa.jpf.vm.hprof.HprofGraphIdentityValidator;
 import gov.nasa.jpf.vm.hprof.HprofPassASmokeGcVerifier;
 import gov.nasa.jpf.vm.hprof.HprofPassASmokeRootBinder;
@@ -32,6 +33,7 @@ public class HprofHeapBootstrap extends ListenerAdapter {
   private final File hprof;
   private final HprofCheckpointBundle checkpointBundle;
   private final boolean loaderQualifiedValidate;
+  private final boolean loaderHierarchyValidate;
   private final Set<String> selectedClasses;
   private final Set<String> selectedStaticClasses;
   private final HprofCheckpointMetadata checkpointMetadata;
@@ -80,6 +82,7 @@ public class HprofHeapBootstrap extends ListenerAdapter {
       throw new JPFConfigException("hprof.file not found: " + hprof.getAbsolutePath());
     }
     loaderQualifiedValidate = conf.getBoolean("hprof.loader_qualified_validate", false);
+    loaderHierarchyValidate = conf.getBoolean("hprof.loader_hierarchy_validate", false);
 
     String[] classNames = conf.getCompactTrimmedStringArray("hprof.classes");
     selectedClasses = Collections.unmodifiableSet(new HashSet<>(Arrays.asList(classNames)));
@@ -149,6 +152,13 @@ public class HprofHeapBootstrap extends ListenerAdapter {
               "hprof.loader_qualified_validate requires hprof.bundle");
         }
         HprofLoaderQualifiedValidator.validateAndBind(
+            vm, view, checkpointBundle, loaderContext, result);
+      }
+      if (loaderHierarchyValidate) {
+        if (checkpointBundle == null) {
+          throw new IllegalStateException("hprof.loader_hierarchy_validate requires hprof.bundle");
+        }
+        HprofLoaderHierarchyValidator.validateAndBind(
             vm, view, checkpointBundle, loaderContext, result);
       }
       if (smokeBindRoot) {

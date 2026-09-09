@@ -1485,6 +1485,116 @@ tasks.register('hprofLoaderQualifiedImportTest') {
     dependsOn runHprofLoaderQualifiedImportJpf
     doLast { println 'HPROF loader-qualified class reconstruction regression passed' }
 }
+// Loader-qualified bundled superclass/interface dependency graph reconstruction.
+def hprofLoaderHierarchyBundleDir = file("${hprofSmokeDir}/class-loader-hierarchy-checkpoint")
+def hprofLoaderHierarchyBuildOutput = new ByteArrayOutputStream()
+def hprofLoaderHierarchyRunOutput = new ByteArrayOutputStream()
+def hprofLoaderHierarchyConfig = file("${projectDir}/src/examples/HprofLoaderHierarchyImport.jpf")
+
+tasks.register('generateHprofLoaderHierarchyBundle', JavaExec) {
+    group = "verification"
+    description = "Captures a custom-loader Contract/Base/Derived hierarchy and exact class artifacts."
+    dependsOn compileExamplesJava
+    classpath = files(sourceSets.examples.output)
+    mainClass = 'HprofLoaderHierarchyCapture'
+    args hprofLoaderHierarchyBundleDir.absolutePath
+    outputs.upToDateWhen { false }
+    doFirst { hprofSmokeDir.mkdirs(); delete hprofLoaderHierarchyBundleDir }
+    doLast {
+        [file("${hprofLoaderHierarchyBundleDir}/heap.hprof"),
+         file("${hprofLoaderHierarchyBundleDir}/classes/class-1.class"),
+         file("${hprofLoaderHierarchyBundleDir}/classes/class-2.class"),
+         file("${hprofLoaderHierarchyBundleDir}/classes/class-3.class")].each { artifact ->
+            if (!artifact.isFile() || artifact.length() == 0) throw new GradleException("Hierarchy checkpoint artifact missing: ${artifact}")
+        }
+        delete file("${hprofLoaderHierarchyBundleDir}/.capture-work")
+    }
+}
+
+tasks.register('finalizeHprofLoaderHierarchyBundle', JavaExec) {
+    group = "verification"
+    description = "Correlates the captured hierarchy with loader/ClassObj HPROF identities."
+    dependsOn compileJava
+    dependsOn copyRuntimeLibs
+    dependsOn generateHprofLoaderHierarchyBundle
+    classpath = files(sourceSets.main.output, configurations.runtimeClasspath)
+    mainClass = 'gov.nasa.jpf.vm.hprof.HprofLoaderHierarchyBundleBuilder'
+    args hprofLoaderHierarchyBundleDir.absolutePath
+    standardOutput = hprofLoaderHierarchyBuildOutput
+    outputs.upToDateWhen { false }
+    doFirst { hprofLoaderHierarchyBuildOutput.reset() }
+    doLast {
+        String output = hprofLoaderHierarchyBuildOutput.toString('UTF-8'); print output
+        if (!output.contains('[HPROF-JPF] hierarchy bundle verified: superclassInHPROF=true interfacesInClassfile=true classes=3')) throw new GradleException('Hierarchy bundle finalization diagnostic missing')
+    }
+}
+
+tasks.register('runHprofLoaderHierarchyImportJpf', Exec) {
+    group = "verification"
+    description = "Defines bundled classes in dependency order and imports a captured Derived instance."
+    dependsOn buildJars
+    dependsOn finalizeHprofLoaderHierarchyBundle
+    outputs.upToDateWhen { false }
+    doFirst {
+        hprofLoaderHierarchyRunOutput.reset()
+        commandLine "${System.getProperty('java.home')}/bin/java", '-cp', "${buildDir}/RunJPF.jar${File.pathSeparator}${buildDir}/deps/*", 'gov.nasa.jpf.tool.RunJPF', "+hprof.bundle=${hprofLoaderHierarchyBundleDir.absolutePath}", hprofLoaderHierarchyConfig.absolutePath
+        standardOutput = hprofLoaderHierarchyRunOutput; errorOutput = hprofLoaderHierarchyRunOutput
+    }
+    doLast {
+        String output = hprofLoaderHierarchyRunOutput.toString('UTF-8'); print output
+        ['[HPROF-JPF] bundled dependency definition order=[hprof.loader.Contract, hprof.loader.Base, hprof.loader.Derived] edges=2',
+         '[HPROF-JPF] loader hierarchy verified:',
+         '[HPROF-JPF-MODEL] loader-qualified class hierarchy verified: fields={1111,2222} virtual={101,202} interface=303',
+         'no errors detected'].each { diagnostic -> if (!output.contains(diagnostic)) throw new GradleException("Loader hierarchy import missing: ${diagnostic}") }
+    }
+}
+
+def hprofLoaderHierarchyNegativeDir = file("${hprofSmokeDir}/class-loader-hierarchy-missing-contract")
+def hprofLoaderHierarchyNegativeOutput = new ByteArrayOutputStream()
+
+tasks.register('prepareHprofLoaderHierarchyMissingDependency', Copy) {
+    dependsOn finalizeHprofLoaderHierarchyBundle
+    from hprofLoaderHierarchyBundleDir
+    into hprofLoaderHierarchyNegativeDir
+    doFirst { delete hprofLoaderHierarchyNegativeDir }
+    doLast {
+        File manifest = file("${hprofLoaderHierarchyNegativeDir}/bundle.properties")
+        Properties props = new Properties(); manifest.withInputStream { props.load(it) }
+        ['loader','name','hprof_id','file','sha256'].each { suffix ->
+            props.setProperty("class.1.${suffix}", props.getProperty("class.2.${suffix}"))
+            props.setProperty("class.2.${suffix}", props.getProperty("class.3.${suffix}"))
+            props.remove("class.3.${suffix}")
+        }
+        props.setProperty('class.count', '2')
+        manifest.withOutputStream { props.store(it, 'H.5 missing Contract negative control') }
+    }
+}
+
+tasks.register('runHprofLoaderHierarchyMissingDependency', Exec) {
+    dependsOn buildJars
+    dependsOn prepareHprofLoaderHierarchyMissingDependency
+    ignoreExitValue = true
+    outputs.upToDateWhen { false }
+    doFirst {
+        hprofLoaderHierarchyNegativeOutput.reset()
+        commandLine "${System.getProperty('java.home')}/bin/java", '-cp', "${buildDir}/RunJPF.jar${File.pathSeparator}${buildDir}/deps/*", 'gov.nasa.jpf.tool.RunJPF', "+hprof.bundle=${hprofLoaderHierarchyNegativeDir.absolutePath}", hprofLoaderHierarchyConfig.absolutePath
+        standardOutput = hprofLoaderHierarchyNegativeOutput; errorOutput = hprofLoaderHierarchyNegativeOutput
+    }
+    doLast {
+        String output = hprofLoaderHierarchyNegativeOutput.toString('UTF-8')
+        if (!output.contains('missing bundled custom interface hprof.loader.Contract required by hprof.loader.Derived')) throw new GradleException("Missing-dependency failure diagnostic absent:\n${output}")
+        println '[HPROF-JPF] negative dependency control verified: missing Contract rejected before system fallback'
+    }
+}
+
+tasks.register('hprofLoaderHierarchyImportTest') {
+    group = "verification"
+    description = "Reconstructs and executes a loader-qualified bundled class dependency graph."
+    dependsOn runHprofLoaderHierarchyImportJpf
+    dependsOn runHprofLoaderHierarchyMissingDependency
+    doLast { println 'HPROF loader-qualified hierarchy reconstruction regression passed' }
+}
+
 tasks.register('hprofRegressionTest') {
     group = "verification"
     description = "Runs all durable HPROF -> JPF regressions."
@@ -1503,4 +1613,5 @@ tasks.register('hprofRegressionTest') {
     dependsOn hprofClassLoaderStateTest
     dependsOn hprofCheckpointBundleTest
     dependsOn hprofLoaderQualifiedImportTest
+    dependsOn hprofLoaderHierarchyImportTest
 }

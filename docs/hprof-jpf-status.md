@@ -192,13 +192,13 @@ Currently supported within selected classes includes all eight Java primitive sc
 | class-initialization state restoration | deferred |
 | HPROF GC roots | unsupported |
 | `String` | unsupported |
-| multiple class loaders | unsupported |
+| multiple class loaders | verified for bounded checkpoint-bundle reconstruction |
 | HPROF class-loader identity | verified |
 | HAHA loader-qualified `ClassObj` identity | verified |
 | same-name classes from different loaders | characterized |
 | instance -> loader-qualified class association | verified |
 | JPF multiple loader-qualified `ClassInfo` | characterized from local APIs |
-| importer loader-aware class resolution | unsupported |
+| importer loader-aware class resolution | verified for explicitly bundled ClassObj identities |
 | loader-qualified static reconstruction | unsupported |
 | loader-qualified lifecycle metadata | unsupported in V1 |
 | custom loader object/state reconstruction | unsupported |
@@ -226,6 +226,15 @@ Currently supported within selected classes includes all eight Java primitive sc
 | same-name/different-bytecode method execution | verified |
 | loader-qualified instance field reconstruction | verified |
 | system-loader substitution prevention | verified |
+| bundled custom superclass identity | verified |
+| bundled custom interface identity | verified |
+| loader-qualified superclass `ClassInfo` edge | verified |
+| loader-qualified interface `ClassInfo` edge | verified |
+| inherited fields across bundled hierarchy | verified |
+| `invokevirtual` over bundled hierarchy | verified |
+| `invokeinterface` over bundled hierarchy | verified |
+| dependency-aware definition ordering | verified |
+| system-loader dependency substitution prevention | verified |
 | generic loader parents | unsupported |
 | loader-qualified object arrays | deferred |
 | future dynamic custom loading | unsupported |
@@ -1234,3 +1243,69 @@ loader mappings=2 bundled class mappings=2
 ~~~
 
 Current limitations remain deliberate: non-null custom loader parents, loader-qualified static reconstruction, loader-qualified lifecycle metadata, loader-qualified object-array component resolution, custom superclass/interface definition graphs, arbitrary loader capability replay, and future dynamic loading are unsupported or deferred. Lifecycle metadata V1 is unchanged.
+
+
+## Pass H.5 — Loader-Qualified Class Dependency Graph
+
+H.5 extends the bounded checkpoint-bundle path from leaf classes to an explicitly bundled dependency graph. The one-loader fixture contains three exact artifacts:
+
+~~~text
+hprof.loader.Contract
+hprof.loader.Base
+  baseField = 1111
+  baseMethod() = 101
+hprof.loader.Derived extends Base implements Contract
+  derivedField = 2222
+  derivedMethod() = 202
+  interfaceMarker() = 303
+~~~
+
+All three definitions belong to the same captured parentless custom loader; only one `Derived` heap instance is selected. `Contract` and `Base` are dependency definitions and correctly require no synthetic heap instances. Bundle V1 already supports arbitrary class counts, so its format and lifecycle metadata V1 are unchanged.
+
+### HPROF/classfile information split
+
+`ClassObj.getSuperClassObj()` preserves the exact captured superclass object identity. In the fixture, HAHA proves that the `Derived` ClassObj points to the exact same-loader `Base` ClassObj. Standard HPROF `CLASS_DUMP` has no implemented-interface list, and HAHA `ClassObj` exposes no interface API. The integrity-bound classfile artifacts provide the executable superclass name and direct interface names.
+
+`HprofBundledClassDependencies` uses the checkout's existing `gov.nasa.jpf.jvm.ClassFile` and `ClassFileReaderAdapter` callbacks (`setClass` and `setInterface`) to read only class headers. `HprofLoaderImportContext` combines those names with captured loader identity and HPROF superclass identity to build bundle-local dependency edges. Same-loader custom superclasses and non-`java.*` interfaces must have matching bundle entries; absence fails before definition and cannot fall back to the system classpath.
+
+A deterministic depth-first topological definition produced:
+
+~~~text
+Contract -> Base -> Derived
+bundled dependency edges = 2
+~~~
+
+JPF then resolves each artifact with `ClassLoaderInfo.getResolvedClassInfo(name, bytes, offset, length)` under the already mapped loader and registers it. Host checks prove:
+
+~~~text
+Derived.getSuperClass() == mapped Base
+Derived.getInterfaceClassInfos().contains(mapped Contract)
+Contract/Base/Derived ClassLoaderInfo == mapped custom loader
+all three ClassLoaderInfo != system loader
+~~~
+
+### State and modeled dispatch proof
+
+Pass A allocates the captured `Derived` using its exact ClassObj-ID-to-ClassInfo mapping. The existing parallel HAHA/JPF hierarchy walk resolves `Base.baseField` through the exact mapped Base `FieldInfo` and `Derived.derivedField` through the exact mapped Derived `FieldInfo`. The import counts are:
+
+~~~text
+objects=1 arrays=0 mappings=1 primitiveFields=2 references=0
+arrayElements=0 staticPrimitiveFields=0 staticReferences=0
+loader mappings=1 bundled classes=3 dependency edges=2
+~~~
+
+A test-only system-loader `Object` static exposes the imported Derived to modeled Java. Modeled reflective entry invokes bundled methods whose bodies exercise normal JPF dispatch: `callBase()` performs virtual dispatch to the inherited base method, `derivedMethod()` executes the derived definition, and `callInterface()` performs interface dispatch through the bundled Contract. The observed result is:
+
+~~~text
+[HPROF-JPF-MODEL] loader-qualified class hierarchy verified: fields={1111,2222} virtual={101,202} interface=303
+~~~
+
+The focused task is:
+
+~~~bash
+./gradlew hprofLoaderHierarchyImportTest --no-daemon
+~~~
+
+It creates a fresh build-owned bundle, correlates one loader and three ClassObjs, imports the instance, checks exact hierarchy identity, executes the modeled methods, and requires `no errors detected`. Its negative control copies the bundle without Contract and requires the precise `missing bundled custom interface ...` failure before any system fallback. This checkout's RunJPF reports listener-initialization failure with process status zero, so that expected-failure control keys on the explicit severe diagnostic; successful execution remains guarded by both modeled success output and `no errors detected`.
+
+H.5 remains bounded to parentless captured loaders, explicitly bundled dependency sets, a system/bootstrap `java.lang.Object` boundary, ordinary instances, and no custom-type arrays. Non-null custom loader parents, loader-qualified statics/lifecycle, object arrays of loader-qualified components, arbitrary loader capability replay, and future dynamic loading remain unsupported or deferred.

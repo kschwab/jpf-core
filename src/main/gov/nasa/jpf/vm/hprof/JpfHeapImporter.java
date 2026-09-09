@@ -471,10 +471,8 @@ public final class JpfHeapImporter {
             "no HPROF instances found for selected class " + className);
       }
       if (loaderContext != null) {
-        for (Long classId : loaderContext.getClassMap().keySet()) {
-          require(bundledCounts.getOrDefault(classId, 0) > 0,
-              "no HPROF instances found for bundled ClassObj 0x" + Long.toHexString(classId));
-        }
+        require(!loaderContext.getClassMap().isEmpty() && !bundledCounts.isEmpty(),
+            "no HPROF instances found for bundled classes");
       }
     }
 

@@ -12,9 +12,14 @@ import gov.nasa.jpf.vm.ThreadInfo;
 import gov.nasa.jpf.vm.VM;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Bundle-local mappings from captured HPROF loader/class identities to modeled JPF identities.
@@ -65,6 +70,8 @@ public final class HprofLoaderImportContext {
     }
 
     Map<Long, ClassInfo> classes = new LinkedHashMap<>();
+    Map<Long, PendingClass> pendingByClassId = new LinkedHashMap<>();
+    Map<Long, Map<String, PendingClass>> pendingByLoaderAndName = new LinkedHashMap<>();
     for (HprofCheckpointBundle.ClassDefinition definition : bundle.classes) {
       ClassObj sourceClass = view.classes.get(definition.hprofClassId);
       require(sourceClass != null,
@@ -80,28 +87,116 @@ public final class HprofLoaderImportContext {
           "ClassObj loader does not match bundle loader for " + definition.binaryName);
       require(normalizeHprofName(sourceClass.getClassName()).equals(definition.binaryName),
           "ClassObj name does not match bundled binary name: " + sourceClass.getClassName());
-
-      ClassLoaderInfo cli = loaders.get(loaderDefinition.hprofLoaderId);
-      require(cli != null, "no modeled loader mapping for " + definition.binaryName);
       byte[] bytes = Files.readAllBytes(definition.artifact);
-      ClassInfo ci = cli.getResolvedClassInfo(definition.binaryName, bytes, 0, bytes.length);
-      require(ci.getClassLoaderInfo() == cli,
-          "bundled class resolved under the wrong modeled loader: " + definition.binaryName);
-      require(definition.binaryName.equals(ci.getName()),
+      HprofBundledClassDependencies dependencies = HprofBundledClassDependencies.parse(bytes);
+      require(definition.binaryName.equals(dependencies.binaryName),
           "bundled class bytes define the wrong name: expected=" + definition.binaryName
-              + " actual=" + ci.getName());
-      if (!ci.isRegistered()) {
-        ci.registerClass(ti);
-      }
-      require(classes.put(definition.hprofClassId, ci) == null,
+              + " actual=" + dependencies.binaryName);
+      PendingClass pending = new PendingClass(definition, sourceClass, loaderDefinition, bytes,
+          dependencies);
+      require(pendingByClassId.put(definition.hprofClassId, pending) == null,
           "duplicate bundled ClassObj HPROF ID 0x"
               + Long.toHexString(definition.hprofClassId));
-      System.out.printf("[HPROF-JPF] class mapping ClassObj=0x%x class=%s "
-              + "JPF-loader=%d classUniqueId=0x%x%n",
-          definition.hprofClassId, ci.getName(), cli.getId(), ci.getUniqueId());
+      Map<String, PendingClass> names = pendingByLoaderAndName.computeIfAbsent(
+          loaderDefinition.hprofLoaderId, ignored -> new HashMap<>());
+      require(names.put(definition.binaryName, pending) == null,
+          "duplicate bundled class name under one captured loader: " + definition.binaryName);
     }
 
+    List<PendingClass> definitionOrder = dependencyOrder(pendingByClassId,
+        pendingByLoaderAndName);
+    int edgeCount = 0;
+    for (PendingClass pending : definitionOrder) {
+      edgeCount += pending.bundledDependencies.size();
+      ClassLoaderInfo cli = loaders.get(pending.loader.hprofLoaderId);
+      require(cli != null, "no modeled loader mapping for " + pending.definition.binaryName);
+      ClassInfo ci = cli.getResolvedClassInfo(pending.definition.binaryName,
+          pending.bytes, 0, pending.bytes.length);
+      require(ci.getClassLoaderInfo() == cli,
+          "bundled class resolved under the wrong modeled loader: "
+              + pending.definition.binaryName);
+      require(pending.definition.binaryName.equals(ci.getName()),
+          "bundled class bytes define the wrong name: expected="
+              + pending.definition.binaryName + " actual=" + ci.getName());
+      if (!ci.isRegistered()) ci.registerClass(ti);
+      classes.put(pending.definition.hprofClassId, ci);
+      System.out.printf("[HPROF-JPF] class mapping ClassObj=0x%x class=%s "
+              + "JPF-loader=%d classUniqueId=0x%x%n",
+          pending.definition.hprofClassId, ci.getName(), cli.getId(), ci.getUniqueId());
+    }
+    System.out.printf("[HPROF-JPF] bundled dependency definition order=%s edges=%d%n",
+        classNames(definitionOrder), edgeCount);
+
     return new HprofLoaderImportContext(loaders, classes);
+  }
+
+  private static List<PendingClass> dependencyOrder(Map<Long, PendingClass> byClassId,
+      Map<Long, Map<String, PendingClass>> byLoaderAndName) {
+    for (PendingClass pending : byClassId.values()) {
+      Map<String, PendingClass> sameLoader =
+          byLoaderAndName.get(pending.loader.hprofLoaderId);
+      ClassObj sourceSuper = pending.sourceClass.getSuperClassObj();
+      if (sourceSuper != null && sourceSuper.getClassLoader() != null
+          && sourceSuper.getClassLoader().getId() == pending.loader.hprofLoaderId) {
+        PendingClass dependency = sameLoader.get(normalizeHprofName(sourceSuper.getClassName()));
+        require(dependency != null,
+            "missing bundled custom superclass " + sourceSuper.getClassName()
+                + " required by " + pending.definition.binaryName);
+        pending.bundledDependencies.add(dependency);
+      }
+      for (String interfaceName : pending.dependencies.interfaceNames) {
+        PendingClass dependency = sameLoader.get(interfaceName);
+        if (dependency != null) {
+          pending.bundledDependencies.add(dependency);
+        } else if (!interfaceName.startsWith("java.")) {
+          require(false, "missing bundled custom interface " + interfaceName
+              + " required by " + pending.definition.binaryName);
+        }
+      }
+    }
+    List<PendingClass> result = new ArrayList<>();
+    Set<PendingClass> visiting = new HashSet<>();
+    Set<PendingClass> visited = new HashSet<>();
+    for (PendingClass pending : byClassId.values()) visit(pending, visiting, visited, result);
+    return result;
+  }
+
+  private static void visit(PendingClass pending, Set<PendingClass> visiting,
+      Set<PendingClass> visited, List<PendingClass> result) {
+    if (visited.contains(pending)) return;
+    require(visiting.add(pending),
+        "cyclic bundled class dependency at " + pending.definition.binaryName);
+    for (PendingClass dependency : pending.bundledDependencies) {
+      visit(dependency, visiting, visited, result);
+    }
+    visiting.remove(pending);
+    visited.add(pending);
+    result.add(pending);
+  }
+
+  private static List<String> classNames(List<PendingClass> classes) {
+    List<String> result = new ArrayList<>();
+    for (PendingClass pending : classes) result.add(pending.definition.binaryName);
+    return result;
+  }
+
+  private static final class PendingClass {
+    final HprofCheckpointBundle.ClassDefinition definition;
+    final ClassObj sourceClass;
+    final HprofCheckpointBundle.LoaderDefinition loader;
+    final byte[] bytes;
+    final HprofBundledClassDependencies dependencies;
+    final List<PendingClass> bundledDependencies = new ArrayList<>();
+
+    PendingClass(HprofCheckpointBundle.ClassDefinition definition, ClassObj sourceClass,
+        HprofCheckpointBundle.LoaderDefinition loader, byte[] bytes,
+        HprofBundledClassDependencies dependencies) {
+      this.definition = definition;
+      this.sourceClass = sourceClass;
+      this.loader = loader;
+      this.bytes = bytes;
+      this.dependencies = dependencies;
+    }
   }
 
   public Map<Long, ClassLoaderInfo> getLoaderMap() {

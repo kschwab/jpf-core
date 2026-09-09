@@ -1,0 +1,4 @@
+target=HprofLoaderHierarchyTarget
+
+listener=gov.nasa.jpf.listener.HprofHeapBootstrap
+hprof.loader_hierarchy_validate=true
